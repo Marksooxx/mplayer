@@ -1,8 +1,13 @@
+import { useRef, useState } from "react";
 import { FolderOpen, ListMusic, Save } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { usePlayerStore } from "../store/playerStore";
-import { useSettingsStore } from "../store/settingsStore";
+import {
+  PLAYLIST_WIDTH_MAX,
+  PLAYLIST_WIDTH_MIN,
+  useSettingsStore,
+} from "../store/settingsStore";
 import { PlaylistItem } from "./PlaylistItem";
 import { exportToM3U8, parseM3U } from "../lib/playlist-io";
 import { playIndex } from "../hooks/useMpv";
@@ -12,10 +17,48 @@ const PLAYLIST_FILTERS = [{ name: "M3U 播放列表", extensions: ["m3u8", "m3u"
 export function PlaylistPanel() {
   const playlist = usePlayerStore((s) => s.playlist);
   const collapsed = useSettingsStore((s) => s.playlistCollapsed);
+  const width = useSettingsStore((s) => s.playlistWidth);
+  const setWidth = useSettingsStore((s) => s.setPlaylistWidth);
   const appendToPlaylist = usePlayerStore((s) => s.appendToPlaylist);
   const setPlaylist = usePlayerStore((s) => s.setPlaylist);
 
+  const [resizing, setResizing] = useState(false);
+  const resizeRafRef = useRef<number | null>(null);
+
   if (collapsed) return null;
+
+  // 拖动左边缘改变 playlist 宽度（向左拉变宽，向右收缩；range 200–600）。
+  // rAF 节流避免 60+Hz 触发的 React render 风暴。
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = width;
+    setResizing(true);
+    document.body.style.cursor = "col-resize";
+
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX; // 鼠标左移 → delta 正 → 宽度增大
+      const target = startWidth + delta;
+      if (resizeRafRef.current !== null) return;
+      resizeRafRef.current = requestAnimationFrame(() => {
+        resizeRafRef.current = null;
+        setWidth(target);
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (resizeRafRef.current !== null) {
+        cancelAnimationFrame(resizeRafRef.current);
+        resizeRafRef.current = null;
+      }
+      setResizing(false);
+      document.body.style.cursor = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   const handleSave = async () => {
     if (playlist.length === 0) return;
@@ -46,7 +89,6 @@ export function PlaylistPanel() {
       const text = await readTextFile(selected);
       const paths = parseM3U(text);
       if (paths.length === 0) return;
-      // 替换当前列表
       setPlaylist([]);
       const added = appendToPlaylist(paths);
       if (added.length > 0) void playIndex(0);
@@ -60,9 +102,24 @@ export function PlaylistPanel() {
 
   return (
     <aside
-      className="flex flex-col h-full border-l border-white/10 bg-neutral-950 anim-slide-right"
-      style={{ width: 280, zIndex: 20 }}
+      className="relative flex flex-col h-full border-l border-white/10 bg-neutral-950 anim-slide-right"
+      style={{ width, zIndex: 20 }}
     >
+      {/* 左边缘拖动条 —— 宽 5px，hover/active 时高亮 primary；占用 z-index 30 避免被列表盖住 */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖动调整播放列表宽度"
+        title={`拖动调整宽度（${PLAYLIST_WIDTH_MIN}-${PLAYLIST_WIDTH_MAX}px）`}
+        onMouseDown={handleResizeStart}
+        onDoubleClick={() => setWidth(280)}
+        className={`absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize z-30 transition-colors ${
+          resizing
+            ? "bg-primary-500/60"
+            : "bg-transparent hover:bg-primary-400/30"
+        }`}
+        style={{ marginLeft: -2 }} /* 让点击区域跨过左边框，更好命中 */
+      />
       <div className="flex items-center gap-1 px-3 py-2.5 border-b border-white/10">
         <ListMusic size={16} className="text-white/70" />
         <span className="flex-1 text-sm font-medium text-white/90">播放列表</span>

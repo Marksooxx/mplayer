@@ -256,18 +256,30 @@ export function ControlBar() {
       >
         {/* 背景轨道 */}
         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-[height] duration-150" />
-        {/* 已播放填充：用 scaleX 走 GPU 合成，避免 width 改动触发 layout */}
+        {/* 已播放填充：用 scaleX 走 GPU 合成；非拖动状态加 100ms 线性过渡，
+            消除 mpv 离散 time-pos 步进造成的"瞬移"感（暂停/恢复时尤其明显） */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full transition-[height] duration-150 origin-left"
-          style={{ transform: `scaleX(${progress})`, willChange: "transform" }}
+          className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full origin-left"
+          style={{
+            transform: `scaleX(${progress})`,
+            willChange: "transform",
+            transition:
+              dragValue !== null
+                ? "height 150ms ease"
+                : "transform 100ms linear, height 150ms ease",
+          }}
         />
         {/* 圆点：用 left:% 相对父容器定位（transform 百分比是相对自身宽度，不能用） */}
         <div
-          className="absolute top-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md transition-[width,height,opacity] duration-150 pointer-events-none"
+          className="absolute top-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md pointer-events-none"
           style={{
             left: `${progress * 100}%`,
             transform: "translate(-50%, -50%)",
             opacity: hasMedia ? 1 : 0,
+            transition:
+              dragValue !== null
+                ? "width 150ms ease, height 150ms ease, opacity 150ms ease"
+                : "left 100ms linear, width 150ms ease, height 150ms ease, opacity 150ms ease",
           }}
         />
         {hoverInfo && hasMedia && (

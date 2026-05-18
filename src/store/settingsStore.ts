@@ -24,7 +24,18 @@ export interface UiSettings {
   frameStepMultiplier: number; // Shift+←/→ 多帧步进的帧数
   alwaysOnTop: boolean; // 窗口置顶
   playbackMode: PlaybackMode; // 列表循环 / 单曲循环 / 随机
+  playlistWidth: number; // 右侧播放列表宽度（px），可拖左边缘调整
   shortcuts: Record<ShortcutAction, string>;
+}
+
+export const PLAYLIST_WIDTH_MIN = 200;
+export const PLAYLIST_WIDTH_MAX = 600;
+export const PLAYLIST_WIDTH_DEFAULT = 280;
+
+function clampPlaylistWidth(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return PLAYLIST_WIDTH_DEFAULT;
+  return Math.max(PLAYLIST_WIDTH_MIN, Math.min(PLAYLIST_WIDTH_MAX, Math.round(n)));
 }
 
 const defaults: UiSettings = {
@@ -36,6 +47,7 @@ const defaults: UiSettings = {
   frameStepMultiplier: FRAME_STEP_DEFAULT,
   alwaysOnTop: false,
   playbackMode: PLAYBACK_MODE_DEFAULT,
+  playlistWidth: PLAYLIST_WIDTH_DEFAULT,
   shortcuts: { ...DEFAULT_SHORTCUTS },
 };
 
@@ -53,6 +65,7 @@ function merge(parsed: unknown): UiSettings {
     ...p,
     shortcuts: { ...DEFAULT_SHORTCUTS, ...(p.shortcuts ?? {}) },
     frameStepMultiplier: clampMultiplier(p.frameStepMultiplier),
+    playlistWidth: clampPlaylistWidth(p.playlistWidth),
   };
   // 强制迁移：旧版本默认全屏键是 "F"（与浏览器/系统 Find/全屏键冲突）
   if (merged.shortcuts.fullscreen === "F" || !merged.shortcuts.fullscreen) {
@@ -82,6 +95,7 @@ interface SettingsState extends UiSettings {
   toggleAlwaysOnTop: () => void;
   setPlaybackMode: (m: PlaybackMode) => void;
   cyclePlaybackMode: () => void;
+  setPlaylistWidth: (v: number) => void;
   openSettings: () => void;
   closeSettings: () => void;
 
@@ -111,6 +125,7 @@ function stripUi(s: SettingsState): UiSettings {
     frameStepMultiplier: s.frameStepMultiplier,
     alwaysOnTop: s.alwaysOnTop,
     playbackMode: s.playbackMode,
+    playlistWidth: s.playlistWidth,
     shortcuts: s.shortcuts,
   };
 }
@@ -169,6 +184,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const m = nextMode(get().playbackMode);
     set({ playbackMode: m });
     persistIfBootstrapped(get, { playbackMode: m });
+  },
+  setPlaylistWidth: (v) => {
+    const clamped = clampPlaylistWidth(v);
+    set({ playlistWidth: clamped });
+    persistIfBootstrapped(get, { playlistWidth: clamped });
   },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false, recordingAction: null }),
