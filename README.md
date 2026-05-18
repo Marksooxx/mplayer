@@ -46,10 +46,13 @@ start-dev.bat
 
 脚本会自动：
 
-1. 检查 `pnpm` / `cargo` 是否在 PATH
-2. 缺失依赖时自动 `pnpm install`
-3. 缺失 `libmpv-2.dll` 时自动从 GitHub Releases 下载并放入 `src-tauri/lib/`
-4. 调用 `pnpm tauri dev` 启动开发服务
+1. 通过 PowerShell 加载用户 profile（让 fnm 激活 node，pnpm/cargo 进入 PATH）
+2. 检查 `node` / `pnpm` / `cargo` 三者是否就位
+3. 缺失依赖时自动 `pnpm install`
+4. 缺失 `libmpv-2.dll` 时自动从 GitHub Releases 下载并放入 `src-tauri/lib/`
+5. 调用 `pnpm tauri dev` 启动开发服务
+
+> `start-dev.bat` 本身只是一个轻量入口，真正的逻辑在 `start-dev.ps1`。这样设计是为了避免双击 `.bat` 启动的 `cmd.exe` 不识别 `fnm` 管理的 node 路径。如果你的 PowerShell profile 没配 fnm，可直接手动 `fnm use 22` 后双击。
 
 首次运行会编译大量 Rust crate，耗时约 3-10 分钟，属正常现象。
 
