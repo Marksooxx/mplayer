@@ -249,13 +249,13 @@ export function ControlBar() {
           className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full transition-[height] duration-150 origin-left"
           style={{ transform: `scaleX(${progress})`, willChange: "transform" }}
         />
-        {/* 圆点：translateX 替代 left；transition 只走 width/height 不抖 */}
+        {/* 圆点：用 left:% 相对父容器定位（transform 百分比是相对自身宽度，不能用） */}
         <div
-          className="absolute top-1/2 left-0 -translate-y-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md transition-[width,height,opacity] duration-150"
+          className="absolute top-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md transition-[width,height,opacity] duration-150 pointer-events-none"
           style={{
-            transform: `translateX(calc(${progress * 100}% - 50%))`,
+            left: `${progress * 100}%`,
+            transform: "translate(-50%, -50%)",
             opacity: hasMedia ? 1 : 0,
-            willChange: "transform",
           }}
         />
         {hoverInfo && hasMedia && (
@@ -313,10 +313,10 @@ export function ControlBar() {
               }}
             />
             <div
-              className="absolute top-1/2 left-0 -translate-y-1/2 w-3 h-3 group-hover:w-3.5 group-hover:h-3.5 rounded-full bg-white border-2 border-white/40 shadow transition-[width,height] duration-150"
+              className="absolute top-1/2 w-3 h-3 group-hover:w-3.5 group-hover:h-3.5 rounded-full bg-white border-2 border-white/40 shadow transition-[width,height] duration-150 pointer-events-none"
               style={{
-                transform: `translateX(calc(${(muted ? 0 : displayVolume)}% - 50%))`,
-                willChange: "transform",
+                left: `${muted ? 0 : displayVolume}%`,
+                transform: "translate(-50%, -50%)",
               }}
             />
           </div>

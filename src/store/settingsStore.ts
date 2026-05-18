@@ -8,6 +8,8 @@ export interface UiSettings {
   playlistCollapsed: boolean;
   topBarAutoHide: boolean;
   topBarHidden: boolean; // true = 永久隐藏顶栏
+  showWaveform: boolean; // 底部波形条显隐
+  rememberPosition: boolean; // 记忆每个文件上次播放位置
   shortcuts: Record<ShortcutAction, string>;
 }
 
@@ -15,6 +17,8 @@ const defaults: UiSettings = {
   playlistCollapsed: false,
   topBarAutoHide: true,
   topBarHidden: false,
+  showWaveform: true,
+  rememberPosition: true,
   shortcuts: { ...DEFAULT_SHORTCUTS },
 };
 
@@ -64,6 +68,8 @@ interface SettingsState extends UiSettings {
   togglePlaylist: () => void;
   setTopBarAutoHide: (v: boolean) => void;
   setTopBarHidden: (v: boolean) => void;
+  setShowWaveform: (v: boolean) => void;
+  setRememberPosition: (v: boolean) => void;
   openSettings: () => void;
   closeSettings: () => void;
 
@@ -100,6 +106,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setTopBarHidden: (v) => {
     set({ topBarHidden: v });
     persist({ ...get(), topBarHidden: v });
+  },
+  setShowWaveform: (v) => {
+    set({ showWaveform: v });
+    persist({ ...get(), showWaveform: v });
+  },
+  setRememberPosition: (v) => {
+    set({ rememberPosition: v });
+    persist({ ...get(), rememberPosition: v });
   },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false, recordingAction: null }),

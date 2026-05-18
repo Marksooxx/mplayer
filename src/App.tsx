@@ -89,6 +89,7 @@ function App() {
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
   const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
+  const showWaveform = useSettingsStore((s) => s.showWaveform);
 
   useVideoMargins(sideRef, bottomRef);
 
@@ -127,7 +128,7 @@ function App() {
 
       <FullscreenAutoHide>
         <div ref={bottomRef} style={{ display: fullscreen ? "none" : "block" }}>
-          <WaveformStrip height={56} />
+          {showWaveform && <WaveformStrip height={56} />}
           <ControlBar />
         </div>
       </FullscreenAutoHide>

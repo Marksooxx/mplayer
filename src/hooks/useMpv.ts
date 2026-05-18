@@ -30,11 +30,13 @@ import {
   setSpeedProp,
 } from "../lib/mpv";
 import {
+  clearPosition,
   getResumePosition,
   loadSettings,
   savePosition,
   saveSettings,
 } from "../lib/persist";
+import { useSettingsStore } from "../store/settingsStore";
 
 const OBSERVED = [
   ["pause", "flag"],
@@ -136,7 +138,11 @@ export function useMpv(): void {
             const v = ev.data ?? 0;
             s.setPosition(v);
             const cur = s.playlist[s.currentIndex];
-            if (cur && Date.now() - lastSavedAt > 5000) {
+            if (
+              cur &&
+              Date.now() - lastSavedAt > 5000 &&
+              useSettingsStore.getState().rememberPosition
+            ) {
               savePosition(cur.path, v);
               lastSavedAt = Date.now();
             }
@@ -239,9 +245,13 @@ export function useMpv(): void {
         }
         if (ev.event === "end-file") {
           console.log("[mpv] end-file reason=" + ev.reason + " error=" + ev.error);
+          const s = usePlayerStore.getState();
+          const item = s.playlist[s.currentIndex];
+          if (ev.reason === "eof" && item) {
+            // 自然播完：清掉这条记录，下次再开它从 0 开始
+            clearPosition(item.path);
+          }
           if (ev.reason === "error") {
-            const s = usePlayerStore.getState();
-            const item = s.playlist[s.currentIndex];
             s.setFileLoaded(false);
             s.setError(`播放失败：${item?.name ?? "未知文件"}（mpv error=${ev.error}）`);
             const next = s.currentIndex + 1;
@@ -288,12 +298,30 @@ export async function playIndex(index: number): Promise<void> {
   console.log("[mpv] loadfile", item.path);
   try {
     await loadFile(item.path);
-    const resume = getResumePosition(item.path);
-    if (resume && resume > 5) {
-      setTimeout(() => {
-        void seekAbsolute(resume);
-      }, 300);
+
+    if (useSettingsStore.getState().rememberPosition) {
+      const resume = getResumePosition(item.path);
+      if (resume && resume > 5) {
+        // mpv 在 loadfile 返回后还要花一刻解析元数据；轮询 duration 直到拿到
+        let dur = 0;
+        const startMs = Date.now();
+        while (Date.now() - startMs < 2000) {
+          try {
+            const v = await getProperty("duration", "double");
+            if (typeof v === "number" && v > 0) {
+              dur = v;
+              break;
+            }
+          } catch { /* mpv may not have parsed yet */ }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        // 只有当 resume 不在文件尾部（< 95% 时长）才恢复，避免"看完了又回到末尾"
+        if (dur > 0 && resume < dur * 0.95) {
+          await seekAbsolute(resume);
+        }
+      }
     }
+
     await setProperty("pause", false);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -91,6 +91,10 @@ export function SettingsPanel() {
   const topBarHidden = useSettingsStore((s) => s.topBarHidden);
   const setTopBarAutoHide = useSettingsStore((s) => s.setTopBarAutoHide);
   const setTopBarHidden = useSettingsStore((s) => s.setTopBarHidden);
+  const showWaveform = useSettingsStore((s) => s.showWaveform);
+  const setShowWaveform = useSettingsStore((s) => s.setShowWaveform);
+  const rememberPosition = useSettingsStore((s) => s.rememberPosition);
+  const setRememberPosition = useSettingsStore((s) => s.setRememberPosition);
   const recordingAction = useSettingsStore((s) => s.recordingAction);
   const cancelRecording = useSettingsStore((s) => s.cancelRecording);
   const setShortcut = useSettingsStore((s) => s.setShortcut);
@@ -156,6 +160,20 @@ export function SettingsPanel() {
             description="关掉浮动显示功能，顶部永远不会出现文件名条"
             checked={topBarHidden}
             onChange={(v) => setTopBarHidden(v)}
+          />
+          <Toggle
+            label="显示底部音频波形条"
+            description="ControlBar 上方常驻波形可视化；关闭后释放该区域空间"
+            checked={showWaveform}
+            onChange={(v) => setShowWaveform(v)}
+          />
+
+          <div className="px-3 py-2 mt-2 text-xs text-white/40 uppercase tracking-wide">播放</div>
+          <Toggle
+            label="记忆每个文件的上次播放位置"
+            description="再次打开同一文件时自动跳转到上次播到的时间（已播完的文件总是从 0 开始）"
+            checked={rememberPosition}
+            onChange={(v) => setRememberPosition(v)}
           />
 
           {/* 快捷键 */}
