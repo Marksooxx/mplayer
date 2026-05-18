@@ -28,6 +28,7 @@ pub fn run() {
     let initial_paths = collect_path_args(std::env::args());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // 第二个实例启动时被调用：把它的 argv 路径推给已有窗口
             let paths = collect_path_args(args);

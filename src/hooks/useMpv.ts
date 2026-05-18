@@ -30,13 +30,19 @@ import {
   setSpeedProp,
 } from "../lib/mpv";
 import {
+  STORE_KEYS,
   clearPosition,
   getResumePosition,
+  loadPositionsAsync,
   loadSettings,
   savePosition,
   saveSettings,
 } from "../lib/persist";
-import { useSettingsStore } from "../store/settingsStore";
+import { migrateFromLocalStorage } from "../lib/storage";
+import {
+  bootstrapSettings,
+  useSettingsStore,
+} from "../store/settingsStore";
 
 const OBSERVED = [
   ["pause", "flag"],
@@ -60,7 +66,20 @@ let lastSavedAt = 0;
 async function ensureInit(): Promise<void> {
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    const settings = loadSettings();
+    // 先一次性把老版本残留在 webview localStorage 的数据迁到 store.json
+    await migrateFromLocalStorage([
+      { lsKey: "mplayer:ui-settings", storeKey: STORE_KEYS.UI },
+      { lsKey: "mplayer:settings", storeKey: STORE_KEYS.PLAYER },
+      { lsKey: "mplayer:positions", storeKey: STORE_KEYS.POSITIONS },
+    ]);
+    // 再把 store 里的设置加载出来：UI 偏好同步进 settingsStore，
+    // positions 进缓存，player prefs 进 prefsCache。三件事并行，再统一拿设置喂 mpv。
+    await Promise.all([
+      bootstrapSettings(),
+      loadPositionsAsync(),
+      loadSettings(),
+    ]);
+    const settings = await loadSettings();
     const baseOptions: Record<string, string | number | boolean> = {
       hwdec: "auto-safe",
       "keep-open": "yes",

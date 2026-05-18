@@ -22,6 +22,9 @@
 - 记忆每个文件的上次播放位置（短文件、近末尾、自然播完都不 resume；可一键清空）
 - 倍速 / 音量 / 静音跨会话保存
 - 拖入文件 / 多选打开 / 自动播下一首 / 全屏鼠标 3 秒自动隐藏
+- 设置默认播放器：MSI/NSIS 安装时自动注册 .mp4/.mkv 等 21 种后缀到 Windows「默认应用」/「打开方式」
+- 单实例：双击多个文件不会开新进程，已开窗口接收路径并追加播放
+- 播放列表导入导出：M3U8 格式，与 VLC / mpv / Potplayer 互通
 
 ---
 
@@ -38,6 +41,8 @@
 | 图标 | `lucide-react` |
 | 样式 | Tailwind CSS v4（`@tailwindcss/vite`） |
 | 状态 | zustand 5 |
+| 持久化 | `tauri-plugin-store`（`%APPDATA%\dev.mark.mplayer\store.json` 人可读 JSON） |
+| 单实例 | `tauri-plugin-single-instance`（双击转发文件路径） |
 | 文件对话框 | `@tauri-apps/plugin-dialog` |
 | 文件读取（peaks 输入） | `@tauri-apps/plugin-fs` + Tauri `asset://` 协议 |
 | 文件管理器集成 | `@tauri-apps/plugin-opener`（`revealItemInDir`） |
@@ -239,6 +244,43 @@ pnpm tauri build
 - `nsis/mplayer_0.1.0_x64-setup.exe` — NSIS 安装程序
 
 `src-tauri/lib/*.dll` 由 `tauri.conf.json` 的 `bundle.resources` 自动随包发布；最终安装包约 ~120MB（其中 `libmpv-2.dll` ~94MB）。
+
+---
+
+## 配置文件位置
+
+所有用户偏好和播放进度都保存在：
+
+```
+%APPDATA%\dev.mark.mplayer\store.json
+```
+
+人可读 JSON，三个顶层键：
+- `ui` — UI 偏好（面板状态、波形开关、记忆位置开关、单帧步进数、快捷键绑定）
+- `player` — 播放器偏好（音量 / 静音 / 倍速）
+- `positions` — 每文件上次播放位置 `{ "D:\\xxx.mp4": 137 }`
+
+**首次升级**会自动把旧版本残留在 WebView2 localStorage 里的同名键迁移过来并删除原值。
+
+> 想跨电脑同步设置？直接拷贝这个 `store.json` 即可。播放列表**不会**自动持久化（关掉就清空），如需保存请在播放列表面板头部点 💾 导出 `.m3u8`。
+
+---
+
+## 设默认播放器
+
+### 安装版（MSI / NSIS）
+安装后扩展名已注册到系统：
+```
+设置 → 应用 → 默认应用 → 按文件类型选默认应用 → 找 .mp4 → 选 mplayer
+```
+或右键任意 .mp4 → 打开方式 → mplayer。
+
+### 绿色版
+1. 把 `mplayer.exe` + `libmpv-2.dll` + `libmpv-wrapper.dll` 三个文件拷到一个**稳定路径**（如 `D:\Apps\mplayer\`）
+2. 右键 .mp4 → 打开方式 → 选择其他应用 → 在这台电脑上选择应用 → 找到刚才的 `mplayer.exe`
+3. 勾选「始终使用此应用打开 .mp4 文件」
+
+> ⚠️ **绿色版不能移动文件夹**：Windows 关联会指向旧路径。要换位置就重新关联一次。三个文件必须**同目录**。
 
 ---
 

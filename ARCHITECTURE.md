@@ -95,16 +95,45 @@ pub async fn calculate_peaks(file_path: String, samples_per_pixel: u32) -> Resul
 
 Lucide 是图标体系。最初用 emoji（`▶ ⏸ ⏪ ⏩`），用户反馈"太丑"，统一改 lucide 矢量。
 
-### 2.5 状态：zustand 两个 store
+### 2.5 状态：zustand 两个 store + 一个 JSON 文件
 
 | store | 持久化 | 内容 |
 |---|---|---|
 | `playerStore` | ✗（运行时） | playlist / currentIndex / 播放进度 / 视频尺寸 / fps / mpvReady / fileLoaded / 错误 |
-| `settingsStore` | ✓ `localStorage` | UI 偏好 + 快捷键绑定 + frameStepMultiplier；带 SCHEMA_VERSION 和迁移逻辑 |
+| `settingsStore` | ✓ 经 `lib/persist.ts` 写到 `store.json` 的 `ui` 键 | UI 偏好 + 快捷键绑定 + frameStepMultiplier；带 SCHEMA_VERSION 与迁移 |
 
-两个分开是因为运行时状态变化频繁（time-pos 每 200ms 一次），不应触发 localStorage 写入。
+两个分开是因为运行时状态变化频繁（time-pos 每 200ms 一次），不应触发持久化写入。
 
-播放位置（每文件）单独存在 `localStorage["mplayer:positions"]`，路径为 key、秒数为 value。
+### 2.6 持久化：`tauri-plugin-store` 单文件 JSON
+
+物理位置：`%APPDATA%\dev.mark.mplayer\store.json`，三个顶层键：
+
+| key | 内容 | 写入触发点 |
+|---|---|---|
+| `ui` | settingsStore 的所有 UI 偏好 + 快捷键绑定 | settingsStore 任意 setter |
+| `player` | volume / muted / speed | mpv `volume` / `mute` / `speed` property-change observer |
+| `positions` | `{ [path]: seconds }` | time-pos observer（每 5 秒；尾段 5 秒内主动 clear） |
+
+**为什么从 localStorage 迁过来**：localStorage 数据存在 WebView2 LevelDB 二进制里，用户找不到、备份不便。store.json 是人可读 JSON，跨电脑同步只要拷一个文件。
+
+**一次性迁移**：`migrateFromLocalStorage` 在 `ensureInit` 最开头跑一次，把老 key（`mplayer:ui-settings` / `mplayer:settings` / `mplayer:positions`）读出来塞进 store 同名顶层键并删除 localStorage 原值。已迁过的跳过。
+
+**`autoSave: 100`**：plugin-store 内部 100ms 防抖批量写盘，频繁 set 不会拖性能。
+
+**异步 hydrate 模式**：
+- zustand store 用默认值初始化，标志 `bootstrapped: false`
+- `ensureInit` 异步并行：`bootstrapSettings()`（UI hydrate） + `loadPositionsAsync()`（positions 进缓存）+ `loadSettings()`（player prefs 进缓存）
+- hydrate 完后 `bootstrapped: true`；所有 setter 用 `persistIfBootstrapped` 守门，避免在 hydrate 前把默认值覆盖到 store
+- mpv init 在 hydrate 完成后才发，确保用真实 volume/speed 启动
+
+### 2.7 单实例 + 启动文件参数
+
+- `tauri-plugin-single-instance`：第二个 mplayer.exe 启动时，把它的 argv 路径转发给已有窗口（`emit("open-files", paths)`），并 `unminimize + set_focus`。避免双开浪费 mpv 实例。
+- 首次启动 argv 通过自定义 `get_launch_args` command 让前端取走（`std::mem::take` 后再次调用返回空，防 HMR 重复消费）。
+- `bundle.fileAssociations` 让 MSI/NSIS 安装时把 .mp4/.mkv 等 21 种扩展注册到 Windows 默认应用列表。
+- 前端 `useLaunchFiles` hook 串联这两条：mount 调一次 `get_launch_args`，并监听 `open-files` 事件，每次都走 `appendToPlaylist + playIndex`。
+
+播放位置（每文件）单独写在 `store.json` 的 `positions` 键，路径为 key、秒数为 value。
 
 ---
 
@@ -467,7 +496,25 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 
 **修复**：读 `container-fps`，算出 `count / fps` 秒，一次 `seek <delta> relative+exact`。`relative+exact` 才会精确按时间跳，不会 snap 到关键帧。失败时回退到 `frame-step` 循环。
 
-### 6.17 `pnpm tauri add libmpv` 在 Windows 上的 setup 失败
+### 6.17 `tauri-plugin-store` 的 `StoreOptions` 必填 `defaults`
+
+**现象**：TS 报错 `Property 'defaults' is missing in type '{ autoSave: number; }'`。
+
+**根因**：`load(path, options?)` 的 options 是 `StoreOptions`，里面 `defaults: { [key: string]: unknown }` 是**必填**字段（即使你不想要默认值）。
+
+**修复**：传 `{ defaults: {}, autoSave: 100 }`。
+
+### 6.18 异步 store hydrate 与 zustand 同步初始化的冲突
+
+**现象**：用 plugin-store 替换 localStorage 后，settingsStore 的初始化变成异步——但 zustand `create()` 要同步给定初始 state。直接在 setter 里发 `persist()` 会在 hydrate 之前就把默认值写回 store，覆盖用户已保存的值。
+
+**修复**：
+- store 初始化用 `defaults` + `bootstrapped: false`
+- `bootstrapSettings()` 异步读 store，patch 进 zustand，最后 `bootstrapped: true`
+- 所有 setter 用 `persistIfBootstrapped` 守门，hydrate 前的修改不写盘
+- `useMpv` 的 `ensureInit` `await` 一遍 hydrate 才发 mpv init，确保用真实值启动
+
+### 6.19 `pnpm tauri add libmpv` 在 Windows 上的 setup 失败
 
 **现象**：cargo 依赖加成功、npm 包装好、permissions 写进 capabilities，但末尾的 setup 脚本因为 pnpm 在 Windows 上拼路径有 bug 报错。
 

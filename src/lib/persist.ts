@@ -1,82 +1,98 @@
-const POSITIONS_KEY = "mplayer:positions";
-const SETTINGS_KEY = "mplayer:settings";
+import { storeGet, storeSet, storeDelete } from "./storage";
 
-type PositionMap = Record<string, number>;
+// store.json 三个键
+const KEY_UI = "ui";              // settingsStore UI 设置 + 快捷键
+const KEY_PLAYER = "player";      // 音量 / 静音 / 倍速
+const KEY_POSITIONS = "positions"; // path → seconds
 
-interface Settings {
+// ---------- 播放器偏好（volume/mute/speed）----------
+interface PlayerPrefs {
   volume: number;
   muted: boolean;
   speed: number;
 }
 
-const defaultSettings: Settings = {
+const defaultPrefs: PlayerPrefs = {
   volume: 80,
   muted: false,
   speed: 1,
 };
 
-function readJSON<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return { ...fallback, ...JSON.parse(raw) } as T;
-  } catch {
-    return fallback;
-  }
+let prefsCache: PlayerPrefs | null = null;
+
+export async function loadSettings(): Promise<PlayerPrefs> {
+  if (prefsCache) return prefsCache;
+  const raw = await storeGet<Partial<PlayerPrefs>>(KEY_PLAYER);
+  prefsCache = { ...defaultPrefs, ...(raw ?? {}) };
+  return prefsCache;
 }
 
-function writeJSON(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* ignore quota */
-  }
+export function loadSettingsSync(): PlayerPrefs {
+  // 给同步上下文用：返回缓存或默认（首次启动若 store 还没 bootstrap 完则用默认）
+  return prefsCache ?? defaultPrefs;
 }
 
-export function loadSettings(): Settings {
-  return readJSON<Settings>(SETTINGS_KEY, defaultSettings);
+export function saveSettings(s: PlayerPrefs): void {
+  prefsCache = s;
+  void storeSet(KEY_PLAYER, s);
 }
 
-export function saveSettings(s: Settings): void {
-  writeJSON(SETTINGS_KEY, s);
+// ---------- 播放进度 ----------
+type PositionMap = Record<string, number>;
+
+let positionsCache: PositionMap | null = null;
+
+export async function loadPositionsAsync(): Promise<PositionMap> {
+  if (positionsCache) return positionsCache;
+  const raw = await storeGet<PositionMap>(KEY_POSITIONS);
+  positionsCache = raw ?? {};
+  return positionsCache;
 }
 
-function loadPositions(): PositionMap {
-  return readJSON<PositionMap>(POSITIONS_KEY, {});
+function ensurePositionsCache(): PositionMap {
+  if (!positionsCache) positionsCache = {};
+  return positionsCache;
 }
 
 export function getResumePosition(path: string): number | undefined {
-  const map = loadPositions();
-  return map[path];
+  return positionsCache?.[path];
 }
 
 export function savePosition(path: string, position: number): void {
   if (!path || !Number.isFinite(position) || position < 1) return;
-  const map = loadPositions();
+  const map = ensurePositionsCache();
   map[path] = Math.floor(position);
-  writeJSON(POSITIONS_KEY, map);
+  void storeSet(KEY_POSITIONS, map);
 }
 
 export function clearPosition(path: string): void {
-  const map = loadPositions();
-  if (path in map) {
-    delete map[path];
-    writeJSON(POSITIONS_KEY, map);
+  if (!positionsCache) return;
+  if (path in positionsCache) {
+    delete positionsCache[path];
+    void storeSet(KEY_POSITIONS, positionsCache);
   }
 }
 
 export function clearAllPositions(): void {
-  try {
-    localStorage.removeItem(POSITIONS_KEY);
-  } catch {
-    /* ignore */
-  }
+  positionsCache = {};
+  void storeDelete(KEY_POSITIONS);
 }
 
 export function countSavedPositions(): number {
-  try {
-    return Object.keys(loadPositions()).length;
-  } catch {
-    return 0;
-  }
+  return positionsCache ? Object.keys(positionsCache).length : 0;
 }
+
+// ---------- UI settings 通用 getter/setter ----------
+export async function loadUiRaw(): Promise<unknown | undefined> {
+  return storeGet<unknown>(KEY_UI);
+}
+
+export function persistUi(value: unknown): void {
+  void storeSet(KEY_UI, value);
+}
+
+export const STORE_KEYS = {
+  UI: KEY_UI,
+  PLAYER: KEY_PLAYER,
+  POSITIONS: KEY_POSITIONS,
+};

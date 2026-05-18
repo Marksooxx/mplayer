@@ -6,8 +6,8 @@ import {
   FRAME_STEP_MIN,
   type ShortcutAction,
 } from "../lib/shortcuts";
+import { loadUiRaw, persistUi } from "../lib/persist";
 
-const STORAGE_KEY = "mplayer:ui-settings";
 const SCHEMA_VERSION = 2;
 
 export interface UiSettings {
@@ -36,48 +36,31 @@ function clampMultiplier(v: unknown): number {
   return Math.max(FRAME_STEP_MIN, Math.min(FRAME_STEP_MAX, Math.round(n)));
 }
 
-function load(): UiSettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaults;
-    const parsed = JSON.parse(raw);
-
-    const merged: UiSettings = {
-      ...defaults,
-      ...parsed,
-      shortcuts: { ...DEFAULT_SHORTCUTS, ...(parsed.shortcuts ?? {}) },
-      frameStepMultiplier: clampMultiplier(parsed.frameStepMultiplier),
-    };
-
-    // 强制迁移：旧版本默认全屏键是 "F"（与浏览器/系统 Find/全屏键冲突，部分焦点
-    // 状态下不触发）；现在默认 Ctrl+Enter。无条件覆盖仍为 "F" 的旧值。
-    // 副作用：极少数把 fullscreen 明确改为 "F" 的用户会被回退到默认；
-    //        但因为 "F" 实际上工作不可靠，这是可接受的代价。
-    if (merged.shortcuts.fullscreen === "F" || !merged.shortcuts.fullscreen) {
-      merged.shortcuts.fullscreen = DEFAULT_SHORTCUTS.fullscreen;
-    }
-
-    return merged;
-  } catch {
-    return defaults;
+function merge(parsed: unknown): UiSettings {
+  if (!parsed || typeof parsed !== "object") return defaults;
+  const p = parsed as Partial<UiSettings>;
+  const merged: UiSettings = {
+    ...defaults,
+    ...p,
+    shortcuts: { ...DEFAULT_SHORTCUTS, ...(p.shortcuts ?? {}) },
+    frameStepMultiplier: clampMultiplier(p.frameStepMultiplier),
+  };
+  // 强制迁移：旧版本默认全屏键是 "F"（与浏览器/系统 Find/全屏键冲突）
+  if (merged.shortcuts.fullscreen === "F" || !merged.shortcuts.fullscreen) {
+    merged.shortcuts.fullscreen = DEFAULT_SHORTCUTS.fullscreen;
   }
+  return merged;
 }
 
 function persist(s: UiSettings): void {
-  try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ ...s, version: SCHEMA_VERSION }),
-    );
-  } catch {
-    /* ignore quota */
-  }
+  persistUi({ ...s, version: SCHEMA_VERSION });
 }
 
 interface SettingsState extends UiSettings {
   settingsOpen: boolean;
   recordingAction: ShortcutAction | null;
   gotoFrameOpen: boolean;
+  bootstrapped: boolean; // store 加载完成才置 true，避免在 hydrate 前覆盖到 store
 
   setPlaylistCollapsed: (v: boolean) => void;
   togglePlaylist: () => void;
@@ -98,43 +81,61 @@ interface SettingsState extends UiSettings {
   closeGotoFrame: () => void;
 }
 
-const initial = load();
+// 一个辅助：仅在 bootstrap 完成后才写回 store，否则会把还没读出来的旧值覆盖成默认
+function persistIfBootstrapped(getter: () => SettingsState, patch: Partial<UiSettings>) {
+  const s = getter();
+  if (!s.bootstrapped) return;
+  persist({ ...stripUi(s), ...patch });
+}
+
+function stripUi(s: SettingsState): UiSettings {
+  return {
+    playlistCollapsed: s.playlistCollapsed,
+    topBarAutoHide: s.topBarAutoHide,
+    topBarHidden: s.topBarHidden,
+    showWaveform: s.showWaveform,
+    rememberPosition: s.rememberPosition,
+    frameStepMultiplier: s.frameStepMultiplier,
+    shortcuts: s.shortcuts,
+  };
+}
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
-  ...initial,
+  ...defaults,
   settingsOpen: false,
   recordingAction: null,
   gotoFrameOpen: false,
+  bootstrapped: false,
 
   setPlaylistCollapsed: (v) => {
     set({ playlistCollapsed: v });
-    persist({ ...get(), playlistCollapsed: v });
+    persistIfBootstrapped(get, { playlistCollapsed: v });
   },
   togglePlaylist: () => {
     const v = !get().playlistCollapsed;
     set({ playlistCollapsed: v });
-    persist({ ...get(), playlistCollapsed: v });
+    persistIfBootstrapped(get, { playlistCollapsed: v });
   },
   setTopBarAutoHide: (v) => {
     set({ topBarAutoHide: v });
-    persist({ ...get(), topBarAutoHide: v });
+    persistIfBootstrapped(get, { topBarAutoHide: v });
   },
   setTopBarHidden: (v) => {
     set({ topBarHidden: v });
-    persist({ ...get(), topBarHidden: v });
+    persistIfBootstrapped(get, { topBarHidden: v });
   },
   setShowWaveform: (v) => {
     set({ showWaveform: v });
-    persist({ ...get(), showWaveform: v });
+    persistIfBootstrapped(get, { showWaveform: v });
   },
   setRememberPosition: (v) => {
     set({ rememberPosition: v });
-    persist({ ...get(), rememberPosition: v });
+    persistIfBootstrapped(get, { rememberPosition: v });
   },
   setFrameStepMultiplier: (v) => {
     const clamped = clampMultiplier(v);
     set({ frameStepMultiplier: clamped });
-    persist({ ...get(), frameStepMultiplier: clamped });
+    persistIfBootstrapped(get, { frameStepMultiplier: clamped });
   },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false, recordingAction: null }),
@@ -142,17 +143,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setShortcut: (action, combo) => {
     const current = get().shortcuts;
     const next: Record<ShortcutAction, string> = { ...current, [action]: combo };
-    // 冲突处理：如果其它 action 已绑定相同 combo，清空它（按用户最新意图）
     for (const [k, v] of Object.entries(next) as [ShortcutAction, string][]) {
       if (k !== action && v === combo) next[k] = "";
     }
     set({ shortcuts: next, recordingAction: null });
-    persist({ ...get(), shortcuts: next });
+    persistIfBootstrapped(get, { shortcuts: next });
   },
   resetShortcuts: () => {
     const fresh = { ...DEFAULT_SHORTCUTS };
     set({ shortcuts: fresh });
-    persist({ ...get(), shortcuts: fresh });
+    persistIfBootstrapped(get, { shortcuts: fresh });
   },
   beginRecording: (action) => set({ recordingAction: action }),
   cancelRecording: () => set({ recordingAction: null }),
@@ -160,3 +160,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   openGotoFrame: () => set({ gotoFrameOpen: true }),
   closeGotoFrame: () => set({ gotoFrameOpen: false }),
 }));
+
+/**
+ * 在 App mount 时调用一次：从 tauri-plugin-store 异步加载持久化设置，
+ * patch 到 zustand。完成后 bootstrapped=true，后续 setter 才会写回。
+ */
+export async function bootstrapSettings(): Promise<void> {
+  try {
+    const raw = await loadUiRaw();
+    if (raw !== undefined) {
+      const m = merge(raw);
+      useSettingsStore.setState({ ...m, bootstrapped: true });
+      return;
+    }
+  } catch (err) {
+    console.warn("[settings] bootstrap failed", err);
+  }
+  useSettingsStore.setState({ bootstrapped: true });
+}
