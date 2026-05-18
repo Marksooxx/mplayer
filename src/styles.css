@@ -1,0 +1,62 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  width: 100vw;
+  background: transparent !important;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+  color: rgb(229 231 235);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* Marquee scroll for long filenames */
+@keyframes marquee-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  10% {
+    transform: translateX(0);
+  }
+  90% {
+    transform: translateX(calc(-1 * var(--marquee-distance, 0px)));
+  }
+  100% {
+    transform: translateX(calc(-1 * var(--marquee-distance, 0px)));
+  }
+}
+
+.marquee-track {
+  display: inline-block;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.marquee-track.is-overflow {
+  animation: marquee-scroll var(--marquee-duration, 8s) linear infinite;
+}
+
+.marquee-container:hover .marquee-track.is-overflow {
+  animation-play-state: paused;
+}
+
+/* Auto-hide cursor in fullscreen idle */
+.cursor-hidden,
+.cursor-hidden * {
+  cursor: none !important;
+}
