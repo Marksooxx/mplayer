@@ -96,8 +96,31 @@ export function ControlBar() {
   const [dragValue, setDragValue] = useState<number | null>(null);
   const [hoverInfo, setHoverInfo] = useState<{ x: number; time: number } | null>(null);
   const [speedOpen, setSpeedOpen] = useState(false);
+  const [draggingVolume, setDraggingVolume] = useState<number | null>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const lastVolRef = useRef(volume);
+
+  // 音量 IPC 节流：rAF 合并相邻 mousemove，避免 60+ Hz 打满 IPC
+  const volRafRef = useRef<number | null>(null);
+  const volPendingRef = useRef<number | null>(null);
+  const queueSendVolume = (v: number) => {
+    volPendingRef.current = v;
+    if (volRafRef.current !== null) return;
+    volRafRef.current = requestAnimationFrame(() => {
+      volRafRef.current = null;
+      if (volPendingRef.current !== null) {
+        const target = volPendingRef.current;
+        volPendingRef.current = null;
+        void setVolumeProp(target);
+      }
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      if (volRafRef.current !== null) cancelAnimationFrame(volRafRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (volume > 0 && !muted) lastVolRef.current = volume;
@@ -160,17 +183,34 @@ export function ControlBar() {
   const handleVolume = (e: React.MouseEvent) => {
     const el = e.currentTarget as HTMLDivElement;
     const rect = el.getBoundingClientRect();
-    const setFromX = (x: number) => {
+    const computeFromX = (x: number) => {
       const ratio = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-      const v = Math.round(ratio * 100);
-      void setVolumeProp(v);
+      return Math.round(ratio * 100);
+    };
+
+    const apply = (v: number) => {
+      // 1) 立即更新本地 UI 状态（乐观渲染，不等 mpv 回报）
+      setDraggingVolume(v);
+      // 2) 节流地发 IPC 给 mpv
+      queueSendVolume(v);
       if (muted && v > 0) void setMutedProp(false);
     };
-    setFromX(e.clientX);
-    const onMove = (ev: MouseEvent) => setFromX(ev.clientX);
-    const onUp = () => {
+
+    apply(computeFromX(e.clientX));
+    const onMove = (ev: MouseEvent) => apply(computeFromX(ev.clientX));
+    const onUp = (ev: MouseEvent) => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      const finalV = computeFromX(ev.clientX);
+      // 终态强制 commit（防止节流吞掉最后一次）
+      if (volRafRef.current !== null) {
+        cancelAnimationFrame(volRafRef.current);
+        volRafRef.current = null;
+      }
+      volPendingRef.current = null;
+      void setVolumeProp(finalV);
+      // 略等 IPC 回程更新 store，再清掉乐观值，避免回弹闪烁
+      setTimeout(() => setDraggingVolume(null), 200);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -185,7 +225,9 @@ export function ControlBar() {
     }
   };
 
-  const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 33 ? Volume : volume < 66 ? Volume1 : Volume2;
+  // 拖动时优先使用本地状态，避免 mpv 回报往返带来的视觉延迟
+  const displayVolume = draggingVolume ?? volume;
+  const VolumeIcon = muted || displayVolume === 0 ? VolumeX : displayVolume < 33 ? Volume : displayVolume < 66 ? Volume1 : Volume2;
 
   return (
     <div
@@ -201,16 +243,20 @@ export function ControlBar() {
         onMouseLeave={handleProgressMouseLeave}
       >
         {/* 背景轨道 */}
-        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-all duration-150" />
-        {/* 已播放填充 */}
+        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-[height] duration-150" />
+        {/* 已播放填充：用 scaleX 走 GPU 合成，避免 width 改动触发 layout */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 left-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full transition-all duration-150"
-          style={{ width: `${progress * 100}%` }}
+          className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full transition-[height] duration-150 origin-left"
+          style={{ transform: `scaleX(${progress})`, willChange: "transform" }}
         />
-        {/* 圆点 */}
+        {/* 圆点：translateX 替代 left；transition 只走 width/height 不抖 */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md transition-all duration-150"
-          style={{ left: `${progress * 100}%`, opacity: hasMedia ? 1 : 0 }}
+          className="absolute top-1/2 left-0 -translate-y-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md transition-[width,height,opacity] duration-150"
+          style={{
+            transform: `translateX(calc(${progress * 100}% - 50%))`,
+            opacity: hasMedia ? 1 : 0,
+            willChange: "transform",
+          }}
         />
         {hoverInfo && hasMedia && (
           <div
@@ -251,16 +297,27 @@ export function ControlBar() {
           <div
             className="relative w-24 h-5 flex items-center cursor-pointer group"
             onMouseDown={handleVolume}
-            title={`音量 ${muted ? 0 : volume}`}
+            title={`音量 ${muted ? 0 : displayVolume}`}
           >
-            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-all duration-150" />
+            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-[height] duration-150" />
+            {/*
+              用 transform: scaleX 代替 width 来跟随拖动 —— 仅 GPU 合成，
+              避免每帧布局回流；rounded 由 transformOrigin: left 保证。
+              这样在 60Hz mousemove 下没有视觉跳动。
+            */}
             <div
-              className="absolute top-1/2 -translate-y-1/2 left-0 h-1.5 group-hover:h-2 bg-white/80 rounded-full transition-all duration-150"
-              style={{ width: `${muted ? 0 : volume}%` }}
+              className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-white/80 rounded-full transition-[height] duration-150 origin-left"
+              style={{
+                transform: `scaleX(${(muted ? 0 : displayVolume) / 100})`,
+                willChange: "transform",
+              }}
             />
             <div
-              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 group-hover:w-3.5 group-hover:h-3.5 rounded-full bg-white border-2 border-white/40 shadow transition-all duration-150"
-              style={{ left: `${muted ? 0 : volume}%` }}
+              className="absolute top-1/2 left-0 -translate-y-1/2 w-3 h-3 group-hover:w-3.5 group-hover:h-3.5 rounded-full bg-white border-2 border-white/40 shadow transition-[width,height] duration-150"
+              style={{
+                transform: `translateX(calc(${(muted ? 0 : displayVolume)}% - 50%))`,
+                willChange: "transform",
+              }}
             />
           </div>
         </div>
