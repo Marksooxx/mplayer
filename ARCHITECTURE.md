@@ -520,17 +520,58 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 
 **修复**：手动跑 `node node_modules/tauri-plugin-libmpv-api/dist-js/cli.cjs setup-lib`。`start-dev.bat` / `start-dev.ps1` 检测到缺 DLL 时也是直接走这条路径。
 
+### 6.20 Tauri 2 capability 静默拒绝 IPC 导致窗口永不显示
+
+**现象**：装好版本后双击启动，进程在 Task Manager 里能看到 `mplayer.exe` 在跑，但屏幕上**没有任何窗口出现**——既不是崩溃也没有报错。
+
+**根因**：为修冷启动白闪我把 `tauri.conf.json` 改成 `visible: false`，由前端 React 首帧后调 `getCurrentWindow().show()`。但 Tauri 2 的 capability 是**显式白名单**——`core:window:default` **不包含** `allow-show`。前端 IPC 调用被静默 reject（既不抛错也不返回），窗口永远停在 hidden 状态。
+
+**修复（三层）**：
+1. capabilities 显式追加 `core:window:allow-show / allow-hide / allow-set-focus / allow-unminimize`（后两者是 single-instance 转发要用的，也是潜在静默 deny）
+2. Rust setup 起独立线程 1.5s 后无条件 `window.show()` 兜底——任何前端故障都不会再让用户看不到窗口
+3. JS `show()` Promise 加 `.catch(console.error)`，类似问题再次出现 devtools 立刻可见
+
+**经验教训**：Tauri 2 的 capability 设计哲学是"严格白名单 + 静默拒绝"，跟以前 Tauri 1 的 allowlist 静默通过完全相反。**任何 IPC 调用上线前都要在 release build 测一遍**，dev build 因为 capability 检查相对宽松可能误以为 OK。所有 `window.*` 操作建议显式列权限，不要依赖 `core:window:default` 这种 meta 权限。
+
 ---
 
 ## 7. 性能 / UX 考量
 
+### 7.1 渲染管线
 - **mpv 渲染走 native GPU**，前端 webview 几乎只负责 UI 控件，CPU/GPU 占用极低
-- **波形 peaks LRU 缓存 20 条**：切回最近播过的文件无需重算
-- **拖动滑块 rAF 合并**：拖音量 / 进度时 IPC 不超过 60Hz
-- **fill 用 `transform: scaleX`**：GPU 合成，60Hz 拖动不抖
-- **WaveformStrip 默认 56px 高、波形条 `barWidth: 2, barGap: 1`**：视觉密度高且解码量适中
-- **PlaylistPanel 打开延迟 80ms**：留时间给 mpv 让出区域
-- **未 fullscreen 时 video-margin-ratio = { right: 280/w, bottom: (60+56)/h }**：mpv 不渲染 UI 区域，节省 GPU
+- **滑块 fill 用 `transform: scaleX`**：GPU 合成层，60Hz 拖动不触发 layout/paint
+- **滑块 thumb 用 `left:%` + `translate(-50%, -50%)`**：单元素 layout 成本可忽略；与 fill 的 scale 错峰（transform 百分比相对自身，不能用来在父容器内移动）
+
+### 7.2 IPC 节流
+- **拖动音量条 rAF 合并**：60+Hz mousemove 合并为每帧最多一次 `setVolumeProp` IPC
+- **拖动进度条仅 mouseup 时 seek**：拖动期间用本地 `dragValue` 渲染，不每帧 IPC
+- **乐观更新 + 200ms 延迟撤销**：拖动期间 `displayVolume = draggingVolume ?? volume` 优先用本地值，松手 200ms 后再清；避免 mpv property-change echo 引发回弹
+
+### 7.3 mpv 嵌入相关
+- **状态驱动 video-margin-ratio**：从 `playlistCollapsed / showWaveform / fullscreen` 直接算 margin，不用 ResizeObserver；常量 `PLAYLIST=280 / CONTROL=60 / WAVEFORM=56`
+- **PlaylistPanel 打开延迟 80ms**：留时间给 mpv 应用 margin IPC，避免 mpv 子窗口短暂覆盖刚 mount 的 playlist
+- **未 fullscreen 时 video-margin-ratio = `{ right: 280/w, bottom: (60+56)/h }`**（关闭波形条则 `bottom: 60/h`）：mpv 完全不在 UI 区域渲染，节省 GPU 也保证 UI 不被覆盖
+
+### 7.4 波形管线
+- **Rust symphonia 离线解码 peaks**：流式解码不爆内存，几乎所有 codec；返回 `Vec<f32>` 几 KB 量级
+- **波形 peaks LRU 缓存 20 条**：切回最近播过的文件零成本
+- **WaveformStrip 实际 56px 高、波形条 `barWidth: 2, barGap: 1, samplesPerPixel: 512`**：视觉密度高且解码量适中
+- **波形与进度条 `inset-x-4` 对齐**：避免 16px 错位让人感觉光标不同步
+- **独立 cursor div 叠在波形上**：即便 wavesurfer `<audio>` media 无法解码（mkv/dts 等），cursor 也跟着 mpv `time-pos` 走
+
+### 7.5 启动期 UX
+- **冷启动无白底闪烁** —— 四层保险：
+  1. `tauri.conf.json` `visible: false`，OS 窗口先不显示
+  2. `index.html` 内联 `<style>` 把 html/body 染 `#0a0a0a`，比 Vite 注入的 CSS 更早
+  3. `styles.css` body 改为不透明深色（mpv 子窗口在 webview 之上，安全）
+  4. App.tsx 首挂载后双 rAF `window.show()`；并由 Rust 1.5s 兜底无条件 show()，UI 永不卡死
+- **PlaylistPanel slide-in / SettingsPanel & GotoFrameDialog fade+scale / ErrorToast slide-down**：每个生灭都过 ~150ms 缓动，消除"突然冒出来"的硬切感
+- **拖文件入窗口的 DragHoverOverlay**：onDragDropEvent enter/over/leave 全套监听，全屏虚线框 + Download 图标 + 提示文案，比传统 web 拖拽 UX 强很多
+- **GotoFrameDialog 双模式自适应**：有 fps → 帧号；无 fps（纯音频）→ mm:ss / hh:mm:ss 时间输入
+
+### 7.6 单实例与启动参数
+- **`tauri-plugin-single-instance`**：第二个 mplayer.exe 启动时把 argv 转发到已有窗口，`unminimize + set_focus + emit("open-files")`，避免重复加载 94MB libmpv
+- **`std::mem::take` 消费 launch args**：`get_launch_args` 调一次就清空，HMR / 重渲染重复 invoke 不会重复入队同一文件
 
 ---
 
@@ -538,9 +579,10 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 
 - Linux / macOS 端 `tauri-plugin-libmpv` 的窗口嵌入路径未经测试
 - WaveformStrip 在超长视频（>2h）的 peaks 解码可能耗时 10s 以上——可以加进度条 / Web Worker 化
-- 跳帧弹窗目前未在音频文件上隐藏（fps=0 时报错提示），可加 disabled 态
 - mpv 字幕样式 / 滤镜 / 视频比例 / 截图等高级功能未暴露 UI
-- 持久化的 settings localStorage key 只有当前版本（v2）的 schema；未来加字段记得在 `load()` 里合并默认值并 bump SCHEMA_VERSION
+- store.json 当前 schema v2，未来加字段记得在 `load()` 里合并默认值并 bump SCHEMA_VERSION
+- 未做代码签名：Windows SmartScreen 首次运行可能弹"无法识别的发布者"。装机量起来后 SmartScreen 数据库会自动给好评，或买 EV 证书一劳永逸（¥2000+/年）
+- 播放列表当前不自动持久化；只能手动 `.m3u8` 导出。如果用户需要"上次列表自动恢复"可加一个 setting + 自动写盘
 
 ---
 
