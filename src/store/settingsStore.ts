@@ -34,12 +34,12 @@ function load(): UiSettings {
       shortcuts: { ...DEFAULT_SHORTCUTS, ...(parsed.shortcuts ?? {}) },
     };
 
-    // 一次性迁移：旧版本默认全屏键是 "F"（与系统/浏览器查找键冲突）；
-    // 升到 SCHEMA_VERSION 2 时统一把仍是 "F" 的迁到 Ctrl+Enter。
-    if ((parsed.version ?? 0) < SCHEMA_VERSION) {
-      if (merged.shortcuts.fullscreen === "F") {
-        merged.shortcuts.fullscreen = DEFAULT_SHORTCUTS.fullscreen;
-      }
+    // 强制迁移：旧版本默认全屏键是 "F"（与浏览器/系统 Find/全屏键冲突，部分焦点
+    // 状态下不触发）；现在默认 Ctrl+Enter。无条件覆盖仍为 "F" 的旧值。
+    // 副作用：极少数把 fullscreen 明确改为 "F" 的用户会被回退到默认；
+    //        但因为 "F" 实际上工作不可靠，这是可接受的代价。
+    if (merged.shortcuts.fullscreen === "F" || !merged.shortcuts.fullscreen) {
+      merged.shortcuts.fullscreen = DEFAULT_SHORTCUTS.fullscreen;
     }
 
     return merged;

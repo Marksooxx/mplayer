@@ -25,18 +25,27 @@ function shouldIgnore(target: EventTarget | null): boolean {
 }
 
 async function toggleFullscreen(setFullscreen: (v: boolean) => void): Promise<void> {
-  const win = getCurrentWindow();
-  const cur = await win.isFullscreen();
-  await win.setFullscreen(!cur);
-  setFullscreen(!cur);
+  try {
+    const win = getCurrentWindow();
+    const cur = await win.isFullscreen();
+    console.log(`[fullscreen] toggle: current=${cur} → ${!cur}`);
+    await win.setFullscreen(!cur);
+    setFullscreen(!cur);
+  } catch (err) {
+    console.error("[fullscreen] setFullscreen failed", err);
+  }
 }
 
 async function exitFullscreen(setFullscreen: (v: boolean) => void): Promise<void> {
-  const win = getCurrentWindow();
-  const cur = await win.isFullscreen();
-  if (cur) {
-    await win.setFullscreen(false);
-    setFullscreen(false);
+  try {
+    const win = getCurrentWindow();
+    const cur = await win.isFullscreen();
+    if (cur) {
+      await win.setFullscreen(false);
+      setFullscreen(false);
+    }
+  } catch (err) {
+    console.error("[fullscreen] exit failed", err);
   }
 }
 
@@ -110,6 +119,7 @@ export function KeyboardShortcuts() {
         }
       }
       if (!matched) return;
+      console.log(`[shortcut] ${combo} → ${matched}`);
 
       // 抢先阻断默认行为，避免按钮的 Space/Enter→click 二次触发
       e.preventDefault();
