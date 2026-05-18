@@ -66,28 +66,31 @@ button {
   cursor: none !important;
 }
 
-/* === 全局深色滚动条（覆盖 Windows 原生灰条）=== */
+/* === 全局深色滚动条 ===
+   设计目标：默认就清晰可见但不抢戏；hover 进一步突出；拖动时染 primary
+   色提示交互；最小 30px 高度让超长列表的拇指仍可点中。
+   不再用 `border + background-clip: padding-box` —— 那个效果会让拇指
+   看起来更细，配合低 alpha 几乎不可见。 */
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 *::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04); /* 微底色提示"这里能滚" */
+  border-radius: 5px;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 5px;
+  min-height: 30px;
   transition: background-color 150ms ease;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
-  background-clip: padding-box;
+  background: rgba(255, 255, 255, 0.45);
 }
 *::-webkit-scrollbar-thumb:active {
-  background: rgba(255, 255, 255, 0.32);
-  background-clip: padding-box;
+  /* 拖动中用 primary-500 色（#6366f1）提示交互 */
+  background: rgba(99, 102, 241, 0.7);
 }
 *::-webkit-scrollbar-corner {
   background: transparent;
