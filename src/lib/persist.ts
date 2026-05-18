@@ -64,3 +64,19 @@ export function clearPosition(path: string): void {
     writeJSON(POSITIONS_KEY, map);
   }
 }
+
+export function clearAllPositions(): void {
+  try {
+    localStorage.removeItem(POSITIONS_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function countSavedPositions(): number {
+  try {
+    return Object.keys(loadPositions()).length;
+  } catch {
+    return 0;
+  }
+}

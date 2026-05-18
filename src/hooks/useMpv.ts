@@ -143,7 +143,14 @@ export function useMpv(): void {
               Date.now() - lastSavedAt > 5000 &&
               useSettingsStore.getState().rememberPosition
             ) {
-              savePosition(cur.path, v);
+              const dur = s.duration;
+              // 不保存尾部 5 秒内的位置 —— 避免短文件累积"近末尾"进度，下次再开
+              // 误以为要 resume 到末尾。播完后 end-file/eof 还会再清一次。
+              if (dur > 0 && v >= dur - 5) {
+                clearPosition(cur.path);
+              } else {
+                savePosition(cur.path, v);
+              }
               lastSavedAt = Date.now();
             }
             break;
@@ -315,9 +322,17 @@ export async function playIndex(index: number): Promise<void> {
           } catch { /* mpv may not have parsed yet */ }
           await new Promise((r) => setTimeout(r, 50));
         }
-        // 只有当 resume 不在文件尾部（< 95% 时长）才恢复，避免"看完了又回到末尾"
-        if (dur > 0 && resume < dur * 0.95) {
+        // 只有当 resume 同时满足两条才恢复：
+        //   1) 距末尾还有 ≥ 30 秒（短视频 < 60s 实质禁用 resume）
+        //   2) 不超过 95% 时长（长视频也要避免靠近末尾）
+        // 这样避免"看完了又回到末尾"的尴尬。
+        const safeMax = Math.min(dur * 0.95, dur - 30);
+        if (dur > 0 && resume < safeMax) {
+          console.log(`[mpv] resume to ${resume}s (duration=${dur}, safeMax=${safeMax})`);
           await seekAbsolute(resume);
+        } else if (dur > 0) {
+          console.log(`[mpv] skipping resume (resume=${resume}s, duration=${dur}s, safeMax=${safeMax}s) — starting from 0`);
+          clearPosition(item.path);
         }
       }
     }

@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { Keyboard, RotateCcw, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Eraser, Keyboard, RotateCcw, X } from "lucide-react";
+import { clearAllPositions, countSavedPositions } from "../lib/persist";
 import { useSettingsStore } from "../store/settingsStore";
 import {
   ACTION_LABELS,
@@ -43,6 +44,39 @@ function Toggle({
         />
       </button>
     </label>
+  );
+}
+
+function ClearPositionsButton() {
+  const [count, setCount] = useState(() => countSavedPositions());
+  const [justCleared, setJustCleared] = useState(false);
+
+  const handleClear = () => {
+    clearAllPositions();
+    setCount(0);
+    setJustCleared(true);
+    setTimeout(() => setJustCleared(false), 1500);
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 p-3 rounded-md hover:bg-white/5">
+      <div className="flex-1">
+        <div className="text-sm text-white/90">清空已保存的播放进度</div>
+        <div className="text-xs text-white/50 mt-0.5">
+          {justCleared
+            ? "已清空。所有文件下次打开都将从头开始。"
+            : `当前有 ${count} 条已保存的进度。点击清空后所有文件下次打开从头开始。`}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={handleClear}
+        disabled={count === 0 && !justCleared}
+        className="shrink-0 inline-flex items-center gap-1 h-8 px-3 rounded text-xs text-white/85 border border-white/15 hover:border-red-400 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        <Eraser size={13} /> 清空
+      </button>
+    </div>
   );
 }
 
@@ -175,6 +209,7 @@ export function SettingsPanel() {
             checked={rememberPosition}
             onChange={(v) => setRememberPosition(v)}
           />
+          <ClearPositionsButton />
 
           {/* 快捷键 */}
           <div className="flex items-center justify-between mt-2 px-3 py-2">

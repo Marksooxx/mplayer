@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TopBar } from "./components/TopBar";
 import { PlayerView } from "./components/PlayerView";
@@ -83,15 +83,26 @@ function ErrorToast() {
 
 function App() {
   useMpv();
+  useVideoMargins();
 
-  const sideRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
   const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
   const showWaveform = useSettingsStore((s) => s.showWaveform);
 
-  useVideoMargins(sideRef, bottomRef);
+  // 桌面 UX：playlist 关→开时，mpv 的 video-margin IPC 需要 ~30-80ms 才能让出
+  // 那 280px 区域。如果立刻 mount PlaylistPanel，mpv 子窗口（绘制在 webview 上）
+  // 会短暂盖住 playlist 文字。先等 mpv 退让再渲染。
+  const [renderPlaylist, setRenderPlaylist] = useState(!playlistCollapsed);
+  useEffect(() => {
+    if (playlistCollapsed) {
+      setRenderPlaylist(false); // 关闭：立即移除
+      return;
+    }
+    // 打开：让 useVideoMargins 先发出 IPC，再 mount
+    const t = setTimeout(() => setRenderPlaylist(true), 80);
+    return () => clearTimeout(t);
+  }, [playlistCollapsed]);
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -119,15 +130,11 @@ function App() {
           <ErrorToast />
           <TopBar />
         </main>
-        {!fullscreen && !playlistCollapsed && (
-          <div ref={sideRef}>
-            <PlaylistPanel />
-          </div>
-        )}
+        {!fullscreen && renderPlaylist && <PlaylistPanel />}
       </div>
 
       <FullscreenAutoHide>
-        <div ref={bottomRef} style={{ display: fullscreen ? "none" : "block" }}>
+        <div style={{ display: fullscreen ? "none" : "block" }}>
           {showWaveform && <WaveformStrip height={56} />}
           <ControlBar />
         </div>
