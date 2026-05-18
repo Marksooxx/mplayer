@@ -10,6 +10,7 @@ import { WaveformStrip } from "./components/WaveformStrip";
 import { GotoFrameDialog } from "./components/GotoFrameDialog";
 import { useMpv } from "./hooks/useMpv";
 import { useVideoMargins } from "./hooks/useVideoMargins";
+import { useLaunchFiles } from "./hooks/useLaunchFiles";
 import { usePlayerStore } from "./store/playerStore";
 import { useSettingsStore } from "./store/settingsStore";
 
@@ -84,6 +85,7 @@ function ErrorToast() {
 function App() {
   useMpv();
   useVideoMargins();
+  useLaunchFiles();
 
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
