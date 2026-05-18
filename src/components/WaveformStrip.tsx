@@ -9,14 +9,9 @@ import { useCursorAnimation } from "../hooks/useCursorAnimation";
 /** 波形上的播放光标。rAF 驱动 left:%，与 ControlBar 进度条同源同步、丝滑 */
 function WaveformCursor() {
   const ref = useRef<HTMLDivElement>(null);
-  useCursorAnimation(
-    ref,
-    (el, p) => {
-      el.style.left = `${p * 100}%`;
-    },
-    "",
-    "left",
-  );
+  useCursorAnimation(ref, (el, p) => {
+    el.style.left = `${p * 100}%`;
+  });
   return (
     <div
       ref={ref}

@@ -40,21 +40,16 @@ import { useCursorAnimation } from "../hooks/useCursorAnimation";
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-/** 进度条已播放填充。rAF 驱动 scaleX，60Hz 与屏幕同步插值，无 React 重渲染 */
+/** 进度条已播放填充。rAF 驱动 scaleX，与屏幕同步，0 额外 React 重渲染 */
 function ProgressFill() {
   const ref = useRef<HTMLDivElement>(null);
-  useCursorAnimation(
-    ref,
-    (el, p) => {
-      el.style.transform = `scaleX(${p})`;
-    },
-    "height 150ms ease",
-    "transform",
-  );
+  useCursorAnimation(ref, (el, p) => {
+    el.style.transform = `scaleX(${p})`;
+  });
   return (
     <div
       ref={ref}
-      className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full origin-left pointer-events-none"
+      className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full origin-left pointer-events-none transition-[height] duration-150"
       style={{ transform: "scaleX(0)", willChange: "transform" }}
     />
   );
@@ -63,18 +58,13 @@ function ProgressFill() {
 /** 进度条圆点（thumb）。rAF 驱动 left:%；transform 留给 translate(-50%, -50%) */
 function ProgressThumb({ hasMedia }: { hasMedia: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
-  useCursorAnimation(
-    ref,
-    (el, p) => {
-      el.style.left = `${p * 100}%`;
-    },
-    "width 150ms ease, height 150ms ease, opacity 150ms ease",
-    "left",
-  );
+  useCursorAnimation(ref, (el, p) => {
+    el.style.left = `${p * 100}%`;
+  });
   return (
     <div
       ref={ref}
-      className="absolute top-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md pointer-events-none"
+      className="absolute top-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md pointer-events-none transition-[width,height,opacity] duration-150"
       style={{
         left: "0%",
         transform: "translate(-50%, -50%)",

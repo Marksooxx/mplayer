@@ -2,72 +2,63 @@ import { useEffect, type RefObject } from "react";
 import { usePlayerStore } from "../store/playerStore";
 
 /**
- * 进度光标的 rAF 插值动画。
+ * 进度光标的 rAF 插值动画（社区主流播放器做法）。
  *
- * 设计思路（参考 YouTube / VLC web / wavesurfer 等）：
- *   - mpv 的 `time-pos` 是离散事件（每视频帧 16-42ms 一次，且经 Tauri IPC 后会有 jitter）。
- *   - 直接渲染会看到"步进式"跳动；CSS transition 把跳动涂均匀但永远滞后 100ms。
- *   - 正确做法是 rAF 插值：每屏幕刷新一次，用"上次观测位置 + 已逝时间 × 速度"估算
- *     此刻 mpv 的实际位置，与屏幕同频更新光标。
+ * 核心：`mpv` 报的 `time-pos` 是离散事件 + IPC 延迟，永远比真实播放位置慢
+ * ~10-20ms。如果暂停那帧直接切到"mpv 真实位置"，cursor 就会向前飘一小段
+ * （raw 位置比之前插值的位置往前一截）。
  *
- * 实现要点：
- *   - 不走 React state；直接通过 ref 操作 `style.transform / style.left`，零额外渲染。
- *   - 拖动期间不插值（用 dragPosition）。
- *   - 暂停期间不插值（mpv 真实静止，用 store.position）；同时启用短 transition
- *     吸收"暂停瞬间最后一帧插值值"与"mpv 最终汇报位置"之间的微小差异。
+ * 正确做法：**暂停帧冻结在上一帧插值算出来的位置**，轨迹完全连续，零瞬移：
  *
- * @param ref          目标 DOM 元素
- * @param updater      回调，给定 progress (0..1)，由调用方决定写到 left:% 还是 scaleX
- * @param baseTransition  非播放态的 transition 字符串（含 left/transform 之外的 width/height/opacity）
+ *   播放：pos = position + (now - observedAt) × speed
+ *         lastExtrapolated = pos
+ *   暂停：pos = lastExtrapolated   ← 不切换到 raw position
+ *   拖动：pos = dragPosition       ← snap 到鼠标
+ *
+ * 实施：每个 cursor 元素一个独立 rAF 循环，用 ref 直接操作 style，零 React 重渲染。
  */
 export function useCursorAnimation(
   ref: RefObject<HTMLElement | null>,
   updater: (el: HTMLElement, progress: number) => void,
-  baseTransition: string,
-  smoothProperty: "left" | "transform",
 ): void {
   useEffect(() => {
     let raf = 0;
-    let lastTransitionWasSmooth: boolean | null = null;
+    // 上一帧插值算出来的位置；暂停时用它冻结，避免跳变到 raw 位置
+    let lastExtrapolated = 0;
+    let initialized = false;
 
     const tick = () => {
       const s = usePlayerStore.getState();
       let pos: number;
-      let smooth = false;
 
       if (s.dragPosition !== null) {
         // 拖动：snap 到鼠标
         pos = s.dragPosition;
+        lastExtrapolated = pos;
+        initialized = true;
       } else if (s.isPlaying && s.positionObservedAt > 0) {
-        // 播放：用 rAF 插值 = 上次观测位置 + 已逝时间 × 速度
+        // 播放：用 rAF 插值
         const elapsed = (performance.now() - s.positionObservedAt) / 1000;
         pos = s.position + elapsed * s.speed;
         if (s.duration > 0 && pos > s.duration) pos = s.duration;
+        if (pos < 0) pos = 0;
+        lastExtrapolated = pos;
+        initialized = true;
       } else {
-        // 暂停 / 未就绪：用真实位置；并启用 transition 吸收最后那一小段差异
-        pos = s.position;
-        smooth = true;
+        // 暂停 / 未就绪：冻结于上一帧插值值；首次（还没插过）退回 raw
+        pos = initialized ? lastExtrapolated : s.position;
       }
 
       const progress =
         s.duration > 0 ? Math.max(0, Math.min(1, pos / s.duration)) : 0;
 
       const el = ref.current;
-      if (el) {
-        // 仅在 smooth 状态切换时修改 transition，避免每帧都写 style.transition
-        if (smooth !== lastTransitionWasSmooth) {
-          el.style.transition = smooth
-            ? `${smoothProperty} 120ms linear, ${baseTransition}`
-            : baseTransition;
-          lastTransitionWasSmooth = smooth;
-        }
-        updater(el, progress);
-      }
+      if (el) updater(el, progress);
 
       raf = requestAnimationFrame(tick);
     };
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [ref, updater, baseTransition, smoothProperty]);
+  }, [ref, updater]);
 }
