@@ -2,10 +2,26 @@
 
 基于 **Tauri 2 + HeroUI v3 + libmpv** 的 Windows 桌面视频播放器。
 
-- 视频解码 / 渲染：原生 libmpv 嵌入到 Tauri 窗口（GPU 加速）
-- 界面：React 19 + HeroUI v3 + Tailwind v4
-- 状态管理：zustand
-- 体积小、原生窗口、支持几乎所有主流视频/音频格式
+- 视频解码 / 渲染：原生 libmpv 嵌入到 Tauri 窗口（GPU 加速，几乎全格式覆盖）
+- 界面：React 19 + HeroUI v3 + Tailwind v4，Lucide 矢量图标
+- 音频波形：Rust `symphonia` 离线解码 peaks + `wavesurfer.js` 渲染
+- 状态：zustand，UI 设置 + 播放进度 + 自定义快捷键全部持久化
+- 体积小、原生窗口、纯 Rust + WebView2，无 Chromium 进程
+
+---
+
+## 功能一览
+
+- 播放列表（常驻右侧，280px，可折叠；长文件名 marquee 滚动；右键菜单移到顶部 / 在文件夹中显示 / 移除）
+- 底部常驻控件：上一首 / 单帧后退 / 播放暂停 / 单帧前进 / 下一首 / 时间 / 进度条 / 音量 / 倍速 / 音轨 / 字幕 / 播放列表切换 / 设置 / 全屏
+- 底部音频波形条（可关）：Rust `symphonia` 解码所有 mpv 支持格式的音轨，wavesurfer.js 渲染条柱，光标随 mpv `time-pos` 同步，点击 seek
+- 顶栏文件名条：默认悬浮显示（鼠标到顶部时浮现，2.5s 后淡出），可在设置中切换为"永久隐藏"
+- 跳转到指定帧（`Ctrl+F` 弹窗输入）：显示当前文件帧率 / 当前帧 / 总帧数，回车精确跳转
+- 全自定义快捷键：12 个动作可在设置面板逐条录键 / 清除 / 恢复默认
+- 三档跳转：裸键 ±5 秒（粗）/ Shift+←/→ ±N 帧（中，N 设置内 1-100 可调）/ Ctrl+←/→ ±1 帧（细）
+- 记忆每个文件的上次播放位置（短文件、近末尾、自然播完都不 resume；可一键清空）
+- 倍速 / 音量 / 静音跨会话保存
+- 拖入文件 / 多选打开 / 自动播下一首 / 全屏鼠标 3 秒自动隐藏
 
 ---
 
@@ -13,14 +29,20 @@
 
 | 层 | 选型 |
 | --- | --- |
-| 桌面壳 | Tauri 2.9 |
-| 视频后端 | libmpv (mpv-2.dll) + `tauri-plugin-libmpv` 0.3.2 |
+| 桌面壳 | Tauri 2.11 |
+| 视频后端 | libmpv (`libmpv-2.dll`) + `tauri-plugin-libmpv` 0.3.2 |
+| 音频波形解码 | `symphonia` 0.5（Rust，全 codec） |
+| 音频波形渲染 | `wavesurfer.js` 7.12 |
 | 前端框架 | React 19 + Vite 7 + TypeScript 5.8 |
-| UI 组件库 | HeroUI v3.0.5 |
-| 样式 | Tailwind CSS v4 |
+| UI 组件库 | HeroUI v3.0.5（仅 Button，其余自实现） |
+| 图标 | `lucide-react` |
+| 样式 | Tailwind CSS v4（`@tailwindcss/vite`） |
 | 状态 | zustand 5 |
 | 文件对话框 | `@tauri-apps/plugin-dialog` |
-| 文件管理器集成 | `@tauri-apps/plugin-opener`（在资源管理器中显示） |
+| 文件读取（peaks 输入） | `@tauri-apps/plugin-fs` + Tauri `asset://` 协议 |
+| 文件管理器集成 | `@tauri-apps/plugin-opener`（`revealItemInDir`） |
+
+> 完整技术决策、模块切分、数据流和踩坑总结见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
 ---
 
@@ -28,8 +50,8 @@
 
 - Windows 10 / 11
 - [Node.js](https://nodejs.org/) ≥ 22
-- [pnpm](https://pnpm.io/) ≥ 10（推荐通过 `npm i -g pnpm` 安装）
-- [Rust toolchain](https://rustup.rs/)（首次编译时下载约 1GB 依赖）
+- [pnpm](https://pnpm.io/) ≥ 10（`npm i -g pnpm`）
+- [Rust toolchain](https://rustup.rs/)（首次编译需下载 ~1GB 依赖）
 - Microsoft Visual Studio C++ 构建工具（Rust 在 Windows 上需要 MSVC link.exe）
 
 ---
@@ -46,21 +68,21 @@ start-dev.bat
 
 脚本会自动：
 
-1. 通过 PowerShell 加载用户 profile（让 fnm 激活 node，pnpm/cargo 进入 PATH）
+1. 通过 PowerShell 加载用户 profile（fnm 激活 node，pnpm / cargo 进入 PATH）
 2. 检查 `node` / `pnpm` / `cargo` 三者是否就位
-3. 缺失依赖时自动 `pnpm install`
-4. 缺失 `libmpv-2.dll` 时自动从 GitHub Releases 下载并放入 `src-tauri/lib/`
-5. 调用 `pnpm tauri dev` 启动开发服务
+3. 缺失 `node_modules` 时自动 `pnpm install`
+4. 缺失 `libmpv-2.dll` 时自动调 `setup-lib` 从 GitHub Releases 下载到 `src-tauri/lib/`
+5. 调用 `pnpm tauri dev`
 
-> `start-dev.bat` 本身只是一个轻量入口，真正的逻辑在 `start-dev.ps1`。这样设计是为了避免双击 `.bat` 启动的 `cmd.exe` 不识别 `fnm` 管理的 node 路径。如果你的 PowerShell profile 没配 fnm，可直接手动 `fnm use 22` 后双击。
+> `start-dev.bat` 仅是轻量入口，真正的逻辑在 `start-dev.ps1`。这样设计是因为双击 `.bat` 启动的 `cmd.exe` 不会跑 PowerShell profile，`fnm` 管理的 node 路径不会在 PATH 里。
 
-首次运行会编译大量 Rust crate，耗时约 3-10 分钟，属正常现象。
+首次运行需要编译 Rust 依赖，耗时 3-10 分钟，属正常现象。
 
 ### 方式二：手动命令
 
 ```powershell
 pnpm install
-# 首次需要下载 libmpv DLL（约 100MB）
+# 首次运行：下载 libmpv DLL（约 100MB）
 node .\node_modules\tauri-plugin-libmpv-api\dist-js\cli.cjs setup-lib
 pnpm tauri dev
 ```
@@ -70,10 +92,11 @@ pnpm tauri dev
 ## 界面与交互
 
 ### 布局
-- **顶栏 TopBar**：「打开文件」按钮 + 当前文件名 + 计数
-- **主区 PlayerView**：视频画面（透明 webview 覆盖在 libmpv 渲染层之上）
-- **右侧 PlaylistPanel**：常驻播放列表，固定宽度 280px；文件名过长时**自动横向滚动（marquee）**
-- **底栏 ControlBar**：常驻播放控件（进度 / 播放控制 / 音量 / 倍速 / 音轨 / 字幕 / 全屏）
+- **TopBar（浮层）**：顶部 60px 触发区悬停时浮现文件名 + 打开按钮，2.5s 不动后淡出。不挤占视频区。
+- **PlayerView（主区）**：透明区，mpv 子窗口在其后渲染视频。空闲态 / 加载态用 React 不透明遮罩兜底。
+- **PlaylistPanel（右侧 280px）**：常驻；折叠后释放空间给视频。
+- **WaveformStrip（56px）**：ControlBar 上方常驻波形条，可在设置里关闭。
+- **ControlBar（底部 ~60px）**：播放控件 + 音量 + 倍速 + 轨道 + 列表 / 设置 / 全屏。
 
 ### 鼠标交互
 | 区域 | 动作 | 行为 |
@@ -83,20 +106,21 @@ pnpm tauri dev
 | 视频画面 | 滚轮 | 调整音量 ±2 |
 | 视频画面 | 拖入文件 | 加入播放列表，若原本为空则自动播放 |
 | 进度条 | 鼠标悬停 | 显示该位置对应时间 |
-| 进度条 | 拖动 | 实时预览，松手后 seek |
-| 音量条 | 点击 / 拖动 | 实时设置 |
+| 进度条 | 拖动 | 实时预览，松手 seek |
+| 音量条 | 点击 / 拖动 | 乐观 UI + rAF 节流 IPC，无延迟感 |
 | 喇叭图标 | 单击 | 静音 / 取消静音 |
+| 波形条 | 点击 | 跳转到该位置（同 mpv `seek absolute`） |
 | 播放列表项 | 单击 | 仅选中（不切歌） |
 | 播放列表项 | 双击 | 切换到该项播放 |
 | 播放列表项 | 右键 | 弹出菜单：移到顶部 / 在文件夹中显示 / 从列表移除 |
 
-### 键盘快捷键（可在「设置」面板中重新绑定）
+### 键盘快捷键（可在设置中重新绑定）
 | 按键 | 默认功能 |
 | --- | --- |
 | `Space` | 播放 / 暂停 |
 | `←` / `→` | 后退 / 前进 5 秒 |
+| **`Shift + ←` / `Shift + →`** | **多帧后退 / 前进**（默认 3 帧，1-100 可调） |
 | **`Ctrl + ←` / `Ctrl + →`** | **单帧后退 / 前进** |
-| **`Shift + ←` / `Shift + →`** | **多帧后退 / 前进**（默认 3 帧，设置里可改 1–100） |
 | **`Ctrl + F`** | **跳转到指定帧号**（弹窗输入） |
 | `↑` / `↓` | 音量 ±5 |
 | `PageUp` / `PageDown` | 上一个 / 下一个视频 |
@@ -104,26 +128,47 @@ pnpm tauri dev
 | `M` | 静音切换 |
 | `Esc` | 退出全屏 |
 
-> 在底部 ControlBar 的 ⚙ 设置 → "键盘快捷键"中可以为任意动作重新绑定按键，或恢复默认。
-> 跳转帧弹窗会显示当前文件的帧率、当前帧、总帧数；输入帧号回车即可精确跳转。
+> 设置 → 「键盘快捷键」可逐条录键 / 清除 / 恢复默认。同一组合键绑到多个动作时旧动作自动清空。
 
 ### 自动行为
-- 打开多个文件时自动开始播放第一个
-- 单个文件播放完毕自动播下一个（EOF 自动接续）
-- 全屏 3 秒不动时控件与鼠标自动隐藏，移动鼠标恢复
-- 关闭后再次打开同一文件，自动跳转到上次位置（每 5 秒持久化进度到 `localStorage`）
+- 打开多个文件 → 自动开始播放第一个
+- 单文件播完 → 自动播下一首（EOF 接续）；列表末尾停止
+- 全屏 3 秒不动 → 控件与鼠标光标自动隐藏；鼠标移动恢复
+- 关闭后再次打开同一文件 → 跳转到上次位置（每 5 秒持久化进度；短视频 / 末尾 / 已播完不 resume）
 - 音量、静音、倍速跨会话记忆
+- 拖入文件到窗口 → 加入播放列表
+
+---
+
+## 设置面板
+
+底部 ControlBar 上的 ⚙ 按钮打开。
+
+### 界面
+- **顶部文件名条悬浮显示**（默认开）：鼠标进入顶部 60px 触发区时浮现，离开后 2.5s 淡出
+- **完全隐藏顶部文件名条**：彻底关闭顶栏浮层
+- **显示底部音频波形条**（默认开）：关闭后释放 56px 空间给视频
+
+### 播放
+- **记忆每个文件的上次播放位置**（默认开）：再次打开同一文件时自动跳转
+- **清空已保存的播放进度**：实时显示当前条数，一键清空 localStorage 里所有进度记录
+- **Shift+←/→ 步进帧数**：数字输入（1-100，默认 3），裸键 ±5 秒 与 Ctrl ±1 帧 的中间档
+
+### 键盘快捷键
+- 12 个动作每行一个按钮显示当前绑定；点击 → 进入录键模式 → 下一次 keydown 写入新绑定（Esc 取消）
+- `×` 清除单个绑定（动作不响应任何键，但 ControlBar 按钮照用）
+- 「恢复默认」一键重置所有绑定
 
 ---
 
 ## 支持的格式
 
-得益于 libmpv（即 mpv 内核），支持几乎所有主流格式。「打开文件」对话框默认筛选：
+得益于 libmpv 内核，几乎所有主流格式都能播。「打开文件」对话框默认筛选：
 
 - **视频**：mp4, mkv, webm, avi, mov, flv, m4v, wmv, ts, mpg, mpeg, rmvb
 - **音频**：mp3, flac, wav, ogg, m4a, aac, wma, opus
 
-> 通过「全部文件」过滤器可加载任意 libmpv 支持的格式（包括 hevc/av1 等）。
+> 通过「全部文件」过滤器可加载任何 libmpv 支持的容器 / 编码。
 
 ---
 
@@ -131,53 +176,58 @@ pnpm tauri dev
 
 ```
 mplayer/
-├── start-dev.bat                 # 一键启动开发服务
+├── start-dev.bat / start-dev.ps1     # 一键启动开发服务
 ├── README.md
-├── package.json
-├── vite.config.ts
-├── tsconfig.json
+├── ARCHITECTURE.md                   # 技术架构 + 决策 + 踩坑
+├── package.json / pnpm-lock.yaml
+├── vite.config.ts / tsconfig.json
 ├── index.html
 │
-├── src/                          # 前端
-│   ├── main.tsx                  # 入口
-│   ├── App.tsx                   # 三栏布局
-│   ├── styles.css                # tailwind + heroui-styles + marquee
+├── src/                              # 前端
+│   ├── main.tsx                      # 入口（无 StrictMode）
+│   ├── App.tsx                       # 顶层布局
+│   ├── styles.css                    # tailwind + heroui-styles + marquee 动画
 │   ├── components/
-│   │   ├── TopBar.tsx
-│   │   ├── PlayerView.tsx        # 透明视频区 + 单/双击 + 拖拽 + 滚轮
-│   │   ├── ControlBar.tsx        # 底部常驻控件
-│   │   ├── PlaylistPanel.tsx     # 右侧常驻播放列表
-│   │   ├── PlaylistItem.tsx      # 列表项 + 右键菜单
-│   │   ├── MarqueeText.tsx       # 长文件名横向滚动
-│   │   ├── TrackMenu.tsx         # 音轨 / 字幕轨切换
-│   │   └── KeyboardShortcuts.tsx # 全局快捷键
+│   │   ├── TopBar.tsx                # 顶部浮层文件名条
+│   │   ├── PlayerView.tsx            # 透明视频区 + 单/双击 + 拖拽 + 滚轮
+│   │   ├── ControlBar.tsx            # 底部常驻控件
+│   │   ├── WaveformStrip.tsx         # 波形可视化
+│   │   ├── PlaylistPanel.tsx         # 右侧常驻列表
+│   │   ├── PlaylistItem.tsx          # 列表项 + marquee + 右键菜单
+│   │   ├── MarqueeText.tsx           # 通用长文本横向滚动
+│   │   ├── TrackMenu.tsx             # 音轨 / 字幕轨切换
+│   │   ├── SettingsPanel.tsx         # 设置 modal（含快捷键编辑器）
+│   │   ├── GotoFrameDialog.tsx       # Ctrl+F 跳转帧弹窗
+│   │   └── KeyboardShortcuts.tsx     # 全局快捷键派发器
 │   ├── hooks/
-│   │   ├── useMpv.ts             # mpv 初始化、属性监听、播放控制
-│   │   └── useVideoMargins.ts    # 同步 UI 占位到 mpv video-margin-ratio
+│   │   ├── useMpv.ts                 # mpv init / observers / playIndex
+│   │   └── useVideoMargins.ts        # 状态驱动 mpv video-margin-ratio
 │   ├── store/
-│   │   └── playerStore.ts        # zustand 全局状态
+│   │   ├── playerStore.ts            # 播放器全局状态
+│   │   └── settingsStore.ts          # UI 设置 + 快捷键绑定
 │   └── lib/
-│       ├── mpv.ts                # 业务命令封装
-│       ├── persist.ts            # 进度 / 偏好持久化
-│       └── format.ts             # 时间 / 路径格式化
+│       ├── mpv.ts                    # mpv 命令封装（setPaused/togglePause/seek/frameStepBy 等）
+│       ├── shortcuts.ts              # ShortcutAction 枚举 + 标签 + 默认绑定 + combo 工具
+│       ├── persist.ts                # 进度 + 设置 localStorage 读写
+│       └── format.ts                 # 时间 / 路径格式化
 │
-└── src-tauri/                    # Tauri 后端
-    ├── Cargo.toml                # tauri 2 + tauri-plugin-libmpv + dialog + opener
-    ├── tauri.conf.json           # transparent: true, resources: lib/**
-    ├── capabilities/default.json
-    ├── lib/                      # 由 setup-lib 自动下载
+└── src-tauri/                        # Tauri 后端
+    ├── Cargo.toml                    # tauri 2 + tauri-plugin-libmpv + symphonia + plugins
+    ├── tauri.conf.json               # transparent:true / asset 协议 / bundle.resources
+    ├── capabilities/default.json     # 显式 fullscreen / fs / opener 权限
+    ├── build.rs                      # 编译时复制 DLL 到 target/<profile>/
+    ├── lib/                          # 由 setup-lib 下载
     │   ├── libmpv-2.dll
     │   └── libmpv-wrapper.dll
     └── src/
         ├── main.rs
-        └── lib.rs                # 注册三个插件
+        ├── lib.rs                    # plugin 注册 + invoke_handler
+        └── peaks.rs                  # symphonia 离线 peaks 计算 (Tauri command)
 ```
 
 ---
 
 ## 打包发布
-
-测试通过后执行：
 
 ```powershell
 pnpm tauri build
@@ -185,18 +235,18 @@ pnpm tauri build
 
 产物位于 `src-tauri/target/release/bundle/`：
 
-- `msi/mplayer_0.1.0_x64_en-US.msi` — Windows Installer 安装包
+- `msi/mplayer_0.1.0_x64_en-US.msi` — Windows Installer
 - `nsis/mplayer_0.1.0_x64-setup.exe` — NSIS 安装程序
 
-`src-tauri/lib/*.dll` 由 `tauri.conf.json` 的 `bundle.resources` 自动随包发布，最终安装包大小约 ~120MB（libmpv-2.dll 本身约 94MB）。
+`src-tauri/lib/*.dll` 由 `tauri.conf.json` 的 `bundle.resources` 自动随包发布；最终安装包约 ~120MB（其中 `libmpv-2.dll` ~94MB）。
 
 ---
 
-## 已知问题与限制
+## 已知限制
 
-- 仅在 Windows 10/11 下完整测试。`tauri-plugin-libmpv` 的 Linux / macOS 嵌入式渲染仍处实验阶段。
-- 首次 `pnpm tauri dev` 编译 Rust 依赖耗时较长，请耐心等待。
-- 拖动进度条期间不会暂停播放（mpv 的 seek 命令本身已优化，体感不抖）；如需暂停-拖动-恢复行为可在 `ControlBar.tsx` 的 `handleProgressDown` 中扩展。
+- 仅在 Windows 10/11 完整测试。`tauri-plugin-libmpv` 的 Linux / macOS 嵌入式渲染仍处实验阶段。
+- 首次 `pnpm tauri dev` 编译 Rust 依赖耗时较长。
+- 拖动进度条期间不会暂停播放（mpv `seek` 已做关键帧优化，体感不抖）。
 
 ---
 
@@ -204,8 +254,13 @@ pnpm tauri build
 
 - [nini22P/tauri-plugin-libmpv](https://github.com/nini22P/tauri-plugin-libmpv) — Tauri 2 的 libmpv 嵌入插件
 - [zhongfly/mpv-winbuild](https://github.com/zhongfly/mpv-winbuild) — Windows 下的 libmpv-2.dll 构建
+- [Symphonia](https://github.com/pdeljanov/Symphonia) — Rust 纯解码库（音频波形）
+- [wavesurfer.js](https://wavesurfer.xyz/) — 波形渲染
 - [HeroUI v3](https://heroui.com/) — React UI 组件库
+- [Lucide](https://lucide.dev/) — 矢量图标
 - [Tauri](https://tauri.app/) — 桌面应用框架
+
+---
 
 ## License
 
