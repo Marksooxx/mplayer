@@ -36,6 +36,7 @@ interface PlayerState {
   fullscreen: boolean;
   controlsVisible: boolean;
 
+  mpvReady: boolean;
   errorMsg: string | null;
 
   setPlaylist: (items: PlaylistItem[]) => void;
@@ -61,6 +62,7 @@ interface PlayerState {
   setFullscreen: (v: boolean) => void;
   setControlsVisible: (v: boolean) => void;
 
+  setMpvReady: (v: boolean) => void;
   setError: (msg: string | null) => void;
 }
 
@@ -90,6 +92,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   fullscreen: false,
   controlsVisible: true,
 
+  mpvReady: false,
   errorMsg: null,
 
   setPlaylist: (items) => set({ playlist: items }),
@@ -146,5 +149,6 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   setFullscreen: (v) => set({ fullscreen: v }),
   setControlsVisible: (v) => set({ controlsVisible: v }),
 
+  setMpvReady: (v) => set({ mpvReady: v }),
   setError: (msg) => set({ errorMsg: msg }),
 }));

@@ -40,6 +40,16 @@ const OBSERVED = [
 let initialized = false;
 let lastSavedAt = 0;
 
+/** wait for mpvReady or timeout */
+async function waitForMpv(timeoutMs = 5000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (usePlayerStore.getState().mpvReady) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
 export function useMpv(): void {
   const ready = useRef(false);
 
@@ -54,26 +64,48 @@ export function useMpv(): void {
     const setup = async () => {
       const settings = loadSettings();
 
-      await init({
-        initialOptions: {
-          vo: "gpu-next",
-          hwdec: "auto-safe",
-          "keep-open": "yes",
-          "force-window": "yes",
-          osc: "no",
-          "input-default-bindings": "no",
-          "input-vo-keyboard": "no",
-          volume: settings.volume,
-          mute: settings.muted ? "yes" : "no",
-          speed: settings.speed,
-        },
-        observedProperties: OBSERVED,
-      });
+      // 一次性尝试 init；如果 gpu-next vo 失败，回退 gpu
+      const baseOptions: Record<string, string | number | boolean> = {
+        hwdec: "auto-safe",
+        "keep-open": "yes",
+        "force-window": "yes",
+        osc: "no",
+        "input-default-bindings": "no",
+        "input-vo-keyboard": "no",
+        // 强制让 mpv 把日志事件抛上来，便于调试
+        "msg-level": "all=v",
+        volume: settings.volume,
+        mute: settings.muted ? "yes" : "no",
+        speed: settings.speed,
+      };
+
+      try {
+        await init({
+          initialOptions: { ...baseOptions, vo: "gpu-next" },
+          observedProperties: OBSERVED,
+        });
+        console.log("[mpv] initialized with vo=gpu-next");
+      } catch (err1) {
+        console.warn("[mpv] gpu-next init failed, retrying with vo=gpu", err1);
+        try {
+          await init({
+            initialOptions: { ...baseOptions, vo: "gpu" },
+            observedProperties: OBSERVED,
+          });
+          console.log("[mpv] initialized with vo=gpu");
+        } catch (err2) {
+          const msg = err2 instanceof Error ? err2.message : String(err2);
+          console.error("[mpv] init failed twice", err2);
+          usePlayerStore.getState().setError(`mpv 初始化失败：${msg}`);
+          return;
+        }
+      }
 
       const store = usePlayerStore.getState();
       store.setVolume(settings.volume);
       store.setMuted(settings.muted);
       store.setSpeed(settings.speed);
+      store.setMpvReady(true);
 
       unlistenProps = await observeProperties(OBSERVED, (ev) => {
         const s = usePlayerStore.getState();
@@ -127,15 +159,34 @@ export function useMpv(): void {
       });
 
       unlistenEvents = await listenEvents((ev) => {
-        if (ev.event === "end-file" && ev.reason === "error") {
-          const s = usePlayerStore.getState();
-          s.setError(`播放失败：${s.playlist[s.currentIndex]?.name ?? "未知文件"}`);
-          const next = s.currentIndex + 1;
-          if (next < s.playlist.length) {
-            void playIndex(next);
+        // 把 mpv 内部日志透传到 devtools 便于排错
+        if (ev.event === "log-message") {
+          const lvl = ev.level;
+          const text = `[mpv:${ev.prefix}] ${ev.text.trimEnd()}`;
+          if (lvl === "fatal" || lvl === "error") console.error(text);
+          else if (lvl === "warn") console.warn(text);
+          else if (lvl === "info" || lvl === "status") console.log(text);
+          else console.debug(text);
+          return;
+        }
+        if (ev.event === "file-loaded") {
+          console.log("[mpv] file-loaded");
+          return;
+        }
+        if (ev.event === "end-file") {
+          console.log("[mpv] end-file reason=" + ev.reason + " error=" + ev.error);
+          if (ev.reason === "error") {
+            const s = usePlayerStore.getState();
+            const item = s.playlist[s.currentIndex];
+            s.setError(`播放失败：${item?.name ?? "未知文件"}（mpv error=${ev.error}）`);
+            const next = s.currentIndex + 1;
+            if (next < s.playlist.length) {
+              setTimeout(() => void playIndex(next), 500);
+            }
           }
         }
       });
+
     };
 
     void setup();
@@ -145,6 +196,7 @@ export function useMpv(): void {
       unlistenEvents?.();
       void destroy();
       initialized = false;
+      usePlayerStore.getState().setMpvReady(false);
     };
   }, []);
 
@@ -165,19 +217,30 @@ export async function playIndex(index: number): Promise<void> {
   const item = s.playlist[index];
   s.setCurrentIndex(index);
   s.setError(null);
+
+  if (!s.mpvReady) {
+    console.log("[mpv] waiting for ready before loadfile", item.path);
+    const ok = await waitForMpv(5000);
+    if (!ok) {
+      s.setError("mpv 尚未初始化完成，请稍候再试");
+      return;
+    }
+  }
+
+  console.log("[mpv] loadfile", item.path);
   try {
     await loadFile(item.path);
     const resume = getResumePosition(item.path);
     if (resume && resume > 5) {
-      // small delay so mpv can load file before seek; file-loaded event would be more robust
       setTimeout(() => {
         void seekAbsolute(resume);
-      }, 250);
+      }, 300);
     }
     await setProperty("pause", false);
   } catch (err) {
-    s.setError(`无法加载文件：${item.name}`);
-    console.error(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[mpv] loadfile threw", err);
+    s.setError(`无法加载 ${item.name}：${msg}`);
   }
 }
 

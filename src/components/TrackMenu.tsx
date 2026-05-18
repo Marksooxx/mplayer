@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Button } from "@heroui/react";
+import { AudioLines, Captions } from "lucide-react";
 import { usePlayerStore } from "../store/playerStore";
 import { setAudioTrack, setSubtitleTrack } from "../lib/mpv";
 
@@ -18,6 +18,7 @@ export function TrackMenu({ kind, label }: Props) {
 
   const items = tracks.filter((t) => t.type === kind);
   const currentId = kind === "sub" ? currentSid : currentAid;
+  const Icon = kind === "sub" ? Captions : AudioLines;
 
   const handleSelect = async (id: number | "no") => {
     try {
@@ -29,28 +30,37 @@ export function TrackMenu({ kind, label }: Props) {
     setOpen(false);
   };
 
+  const disabled = items.length === 0;
+
   return (
     <div className="relative">
-      <Button
-        size="sm"
-        variant="outline"
-        onPress={() => setOpen((v) => !v)}
-        isDisabled={items.length === 0}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        aria-label={label}
+        title={label}
+        className="inline-flex items-center gap-1.5 h-9 px-2.5 rounded-md text-sm text-white/85 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >
-        {label}
-      </Button>
+        <Icon size={16} />
+        <span>{label}</span>
+        <span className="text-[10px] text-white/40 tabular-nums">
+          {items.length > 0 ? `(${items.length})` : ""}
+        </span>
+      </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            className="absolute bottom-full right-0 mb-2 z-50 min-w-[200px] max-h-[300px] overflow-y-auto py-1 rounded-md border border-white/10 bg-neutral-900/95 backdrop-blur-md shadow-xl text-sm text-white/90"
-          >
+          <div className="absolute bottom-full right-0 mb-2 z-50 min-w-[220px] max-h-[300px] overflow-y-auto py-1 rounded-md border border-white/10 bg-neutral-900 shadow-xl text-sm text-white/90">
             <button
               className={`w-full px-3 py-1.5 text-left hover:bg-white/10 ${currentId === null ? "text-primary-300" : ""}`}
               onClick={() => handleSelect("no")}
             >
-              {currentId === null ? "✓ " : "  "}关闭
+              {currentId === null ? "✓ " : "  "}关闭{label}
             </button>
+            {items.length === 0 && (
+              <div className="px-3 py-2 text-xs text-white/40">无可用轨道</div>
+            )}
             {items.map((t) => (
               <button
                 key={t.id}

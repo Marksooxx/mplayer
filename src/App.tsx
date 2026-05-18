@@ -60,19 +60,21 @@ function ErrorToast() {
   const errorMsg = usePlayerStore((s) => s.errorMsg);
   const setError = usePlayerStore((s) => s.setError);
 
-  useEffect(() => {
-    if (!errorMsg) return;
-    const t = setTimeout(() => setError(null), 4000);
-    return () => clearTimeout(t);
-  }, [errorMsg, setError]);
-
   if (!errorMsg) return null;
   return (
     <div
-      className="absolute top-14 left-1/2 -translate-x-1/2 px-4 py-2 rounded-md bg-red-500/90 text-white text-sm shadow-lg"
+      className="absolute top-16 left-1/2 -translate-x-1/2 flex items-start gap-2 max-w-[80%] px-4 py-2 rounded-md bg-red-600 text-white text-sm shadow-2xl border border-red-400"
       style={{ zIndex: 100 }}
     >
-      {errorMsg}
+      <span className="break-words">{errorMsg}</span>
+      <button
+        type="button"
+        onClick={() => setError(null)}
+        className="shrink-0 ml-2 text-white/80 hover:text-white"
+        aria-label="关闭"
+      >
+        ×
+      </button>
     </div>
   );
 }
