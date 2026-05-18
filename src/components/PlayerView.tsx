@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Film, Loader2 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../store/playerStore";
 import {
@@ -13,6 +14,7 @@ export function PlayerView() {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const playlist = usePlayerStore((s) => s.playlist);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
+  const fileLoaded = usePlayerStore((s) => s.fileLoaded);
   const volume = usePlayerStore((s) => s.volume);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
   const appendToPlaylist = usePlayerStore((s) => s.appendToPlaylist);
@@ -73,6 +75,10 @@ export function PlayerView() {
     };
   }, [playlist.length, appendToPlaylist]);
 
+  const isIdle = currentIndex < 0;
+  const isLoading = !isIdle && !fileLoaded;
+  const showOverlay = isIdle || isLoading;
+
   return (
     <div
       className="relative h-full w-full"
@@ -85,13 +91,24 @@ export function PlayerView() {
         cursor: currentIndex >= 0 ? "pointer" : "default",
       }}
     >
-      {currentIndex < 0 && (
+      {/* 空闲态或加载中：用不透明深色背景挡住底下的透明 Tauri 窗口，避免透出桌面 */}
+      {showOverlay && (
         <div
-          className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none"
+          className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 pointer-events-none"
           style={{ zIndex: 5 }}
         >
-          <div className="text-white/60 text-2xl font-light">mplayer</div>
-          <div className="text-white/40 text-sm">把文件拖到这里，或点击顶部「打开文件」</div>
+          {isLoading ? (
+            <>
+              <Loader2 size={36} className="text-white/60 animate-spin" />
+              <div className="text-white/50 text-sm">加载中...</div>
+            </>
+          ) : (
+            <>
+              <Film size={48} className="text-white/30" strokeWidth={1.5} />
+              <div className="text-white/70 text-xl font-light tracking-wide">mplayer</div>
+              <div className="text-white/40 text-sm">把文件拖到这里，或点击顶部「打开文件」</div>
+            </>
+          )}
         </div>
       )}
     </div>

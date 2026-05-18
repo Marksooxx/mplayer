@@ -37,6 +37,7 @@ interface PlayerState {
   controlsVisible: boolean;
 
   mpvReady: boolean;
+  fileLoaded: boolean; // 当 mpv 真正加载了视频帧（file-loaded 事件）才置 true
   errorMsg: string | null;
 
   setPlaylist: (items: PlaylistItem[]) => void;
@@ -63,6 +64,7 @@ interface PlayerState {
   setControlsVisible: (v: boolean) => void;
 
   setMpvReady: (v: boolean) => void;
+  setFileLoaded: (v: boolean) => void;
   setError: (msg: string | null) => void;
 }
 
@@ -93,6 +95,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   controlsVisible: true,
 
   mpvReady: false,
+  fileLoaded: false,
   errorMsg: null,
 
   setPlaylist: (items) => set({ playlist: items }),
@@ -150,5 +153,6 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   setControlsVisible: (v) => set({ controlsVisible: v }),
 
   setMpvReady: (v) => set({ mpvReady: v }),
+  setFileLoaded: (v) => set({ fileLoaded: v }),
   setError: (msg) => set({ errorMsg: msg }),
 }));

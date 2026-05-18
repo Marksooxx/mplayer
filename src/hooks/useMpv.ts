@@ -58,14 +58,9 @@ async function ensureInit(): Promise<void> {
     const baseOptions: Record<string, string | number | boolean> = {
       hwdec: "auto-safe",
       "keep-open": "yes",
-      // immediate 适配 wid 嵌入：进程启动即创建窗口，确保 plugin SetParent 时
-      // 子窗口已存在；空闲态也保证有黑色背景而不是透出桌面。
-      "force-window": "immediate",
-      background: "#000000",
       osc: "no",
       "input-default-bindings": "no",
       "input-vo-keyboard": "no",
-      "msg-level": "all=v",
       volume: settings.volume,
       mute: settings.muted ? "yes" : "no",
       speed: settings.speed,
@@ -195,6 +190,12 @@ export function useMpv(): void {
         }
         if (ev.event === "file-loaded") {
           console.log("[mpv] file-loaded");
+          usePlayerStore.getState().setFileLoaded(true);
+          return;
+        }
+        if (ev.event === "start-file") {
+          // 切到下一个文件时，先把"已加载"标志置 false（让 PlayerView 显示加载中或空闲态）
+          usePlayerStore.getState().setFileLoaded(false);
           return;
         }
         if (ev.event === "end-file") {
@@ -202,6 +203,7 @@ export function useMpv(): void {
           if (ev.reason === "error") {
             const s = usePlayerStore.getState();
             const item = s.playlist[s.currentIndex];
+            s.setFileLoaded(false);
             s.setError(`播放失败：${item?.name ?? "未知文件"}（mpv error=${ev.error}）`);
             const next = s.currentIndex + 1;
             if (next < s.playlist.length) {
@@ -231,6 +233,7 @@ export async function playIndex(index: number): Promise<void> {
   const item = s.playlist[index];
   s.setCurrentIndex(index);
   s.setError(null);
+  s.setFileLoaded(false);
 
   if (!s.mpvReady) {
     console.log("[mpv] waiting for ready before loadfile", item.path);
