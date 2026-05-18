@@ -53,11 +53,7 @@ fn copy_libmpv_dlls() {
                 src.display(),
                 dst.display()
             ),
-            Err(e) => println!(
-                "cargo:warning=failed to copy {}: {}",
-                src.display(),
-                e
-            ),
+            Err(e) => println!("cargo:warning=failed to copy {}: {}", src.display(), e),
         }
         println!("cargo:rerun-if-changed={}", src.display());
     }

@@ -1,11 +1,8 @@
 import { useEffect, useRef } from "react";
-import { Film, Loader2 } from "lucide-react";
+import { Film, Loader2, Music4 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../store/playerStore";
-import {
-  setPaused,
-  setVolumeProp,
-} from "../lib/mpv";
+import { setPaused, setVolumeProp } from "../lib/mpv";
 import { playIndex } from "../hooks/useMpv";
 
 const SINGLE_CLICK_DELAY = 250;
@@ -15,6 +12,7 @@ export function PlayerView() {
   const playlist = usePlayerStore((s) => s.playlist);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
   const fileLoaded = usePlayerStore((s) => s.fileLoaded);
+  const videoWidth = usePlayerStore((s) => s.videoWidth);
   const volume = usePlayerStore((s) => s.volume);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
   const appendToPlaylist = usePlayerStore((s) => s.appendToPlaylist);
@@ -30,7 +28,7 @@ export function PlayerView() {
     }
     clickTimer.current = setTimeout(() => {
       clickTimer.current = null;
-      void setPaused(isPlaying); // 当前在播 → 暂停；当前暂停 → 取消暂停
+      void setPaused(isPlaying);
     }, SINGLE_CLICK_DELAY);
   };
 
@@ -77,7 +75,9 @@ export function PlayerView() {
 
   const isIdle = currentIndex < 0;
   const isLoading = !isIdle && !fileLoaded;
-  const showOverlay = isIdle || isLoading;
+  const isAudioOnly = fileLoaded && videoWidth <= 0;
+  const showOverlay = isIdle || isLoading || isAudioOnly;
+  const current = currentIndex >= 0 ? playlist[currentIndex] : null;
 
   return (
     <div
@@ -88,25 +88,39 @@ export function PlayerView() {
       onContextMenu={(e) => e.preventDefault()}
       style={{
         background: "transparent",
-        cursor: currentIndex >= 0 ? "pointer" : "default",
+        cursor: currentIndex >= 0 && !isAudioOnly ? "pointer" : "default",
       }}
     >
-      {/* 空闲态或加载中：用不透明深色背景挡住底下的透明 Tauri 窗口，避免透出桌面 */}
       {showOverlay && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 pointer-events-none"
           style={{ zIndex: 5 }}
         >
-          {isLoading ? (
-            <>
-              <Loader2 size={36} className="text-white/60 animate-spin" />
-              <div className="text-white/50 text-sm">加载中...</div>
-            </>
-          ) : (
+          {isIdle && (
             <>
               <Film size={48} className="text-white/30" strokeWidth={1.5} />
               <div className="text-white/70 text-xl font-light tracking-wide">mplayer</div>
               <div className="text-white/40 text-sm">把文件拖到这里，或点击顶部「打开文件」</div>
+            </>
+          )}
+          {isLoading && (
+            <>
+              <Loader2 size={36} className="text-white/60 animate-spin" />
+              <div className="text-white/50 text-sm">加载中...</div>
+            </>
+          )}
+          {isAudioOnly && !isLoading && (
+            <>
+              <div className="relative">
+                <Music4 size={72} className="text-primary-400/80" strokeWidth={1.5} />
+                {isPlaying && (
+                  <span className="absolute -bottom-1 -right-1 inline-flex h-3 w-3 rounded-full bg-primary-500 animate-pulse" />
+                )}
+              </div>
+              <div className="text-white/85 text-base font-medium max-w-[80%] text-center truncate px-4">
+                {current?.name ?? "音频"}
+              </div>
+              <div className="text-white/40 text-xs">音频播放中 — 波形见底部</div>
             </>
           )}
         </div>

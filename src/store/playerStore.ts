@@ -38,6 +38,8 @@ interface PlayerState {
 
   mpvReady: boolean;
   fileLoaded: boolean; // 当 mpv 真正加载了视频帧（file-loaded 事件）才置 true
+  videoWidth: number;  // 0 表示无视频流（纯音频）
+  videoHeight: number;
   errorMsg: string | null;
 
   setPlaylist: (items: PlaylistItem[]) => void;
@@ -65,6 +67,7 @@ interface PlayerState {
 
   setMpvReady: (v: boolean) => void;
   setFileLoaded: (v: boolean) => void;
+  setVideoSize: (w: number, h: number) => void;
   setError: (msg: string | null) => void;
 }
 
@@ -96,6 +99,8 @@ export const usePlayerStore = create<PlayerState>((set) => ({
 
   mpvReady: false,
   fileLoaded: false,
+  videoWidth: 0,
+  videoHeight: 0,
   errorMsg: null,
 
   setPlaylist: (items) => set({ playlist: items }),
@@ -154,5 +159,6 @@ export const usePlayerStore = create<PlayerState>((set) => ({
 
   setMpvReady: (v) => set({ mpvReady: v }),
   setFileLoaded: (v) => set({ fileLoaded: v }),
+  setVideoSize: (w, h) => set({ videoWidth: w, videoHeight: h }),
   setError: (msg) => set({ errorMsg: msg }),
 }));

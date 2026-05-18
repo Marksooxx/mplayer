@@ -46,6 +46,8 @@ const OBSERVED = [
   ["sid", "int64", "none"],
   ["aid", "int64", "none"],
   ["eof-reached", "flag", "none"],
+  ["width", "int64", "none"],
+  ["height", "int64", "none"],
 ] as const satisfies MpvObservableProperty[];
 
 let initPromise: Promise<void> | null = null;
@@ -170,6 +172,12 @@ export function useMpv(): void {
               }
             }
             break;
+          case "width":
+            s.setVideoSize(ev.data ?? 0, s.videoHeight);
+            break;
+          case "height":
+            s.setVideoSize(s.videoWidth, ev.data ?? 0);
+            break;
         }
       });
 
@@ -195,7 +203,9 @@ export function useMpv(): void {
         }
         if (ev.event === "start-file") {
           // 切到下一个文件时，先把"已加载"标志置 false（让 PlayerView 显示加载中或空闲态）
-          usePlayerStore.getState().setFileLoaded(false);
+          const s = usePlayerStore.getState();
+          s.setFileLoaded(false);
+          s.setVideoSize(0, 0);
           return;
         }
         if (ev.event === "end-file") {
@@ -234,6 +244,7 @@ export async function playIndex(index: number): Promise<void> {
   s.setCurrentIndex(index);
   s.setError(null);
   s.setFileLoaded(false);
+  s.setVideoSize(0, 0);
 
   if (!s.mpvReady) {
     console.log("[mpv] waiting for ready before loadfile", item.path);

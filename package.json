@@ -14,12 +14,14 @@
     "@heroui/styles": "^3.0.5",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "~2.7.1",
+    "@tauri-apps/plugin-fs": "~2.5.1",
     "@tauri-apps/plugin-opener": "^2",
     "lucide-react": "^1.16.0",
     "react": "^19.1.0",
     "react-aria-components": "^1.17.0",
     "react-dom": "^19.1.0",
     "tauri-plugin-libmpv-api": "^0.3.2",
+    "wavesurfer.js": "^7.12.7",
     "zustand": "^5.0.13"
   },
   "devDependencies": {

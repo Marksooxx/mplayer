@@ -6,6 +6,7 @@ import { ControlBar } from "./components/ControlBar";
 import { PlaylistPanel } from "./components/PlaylistPanel";
 import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { WaveformStrip } from "./components/WaveformStrip";
 import { useMpv } from "./hooks/useMpv";
 import { useVideoMargins } from "./hooks/useVideoMargins";
 import { usePlayerStore } from "./store/playerStore";
@@ -125,6 +126,7 @@ function App() {
 
       <FullscreenAutoHide>
         <div ref={bottomRef} style={{ display: fullscreen ? "none" : "block" }}>
+          <WaveformStrip height={56} />
           <ControlBar />
         </div>
       </FullscreenAutoHide>
