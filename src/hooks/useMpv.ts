@@ -1,13 +1,24 @@
-import { useEffect, useRef } from "react";
+/**
+ * mpv 生命周期与 React 集成
+ *
+ * 注意事项：
+ * 1. mpv 实例是 OS 级资源，按 Tauri 窗口 label 全局唯一。无法承受
+ *    StrictMode 的双重挂载 → 双重 destroy。
+ * 2. `init` 在 plugin 端是幂等的（同 label 已存在则返回成功不重建），
+ *    所以多次调用安全。
+ * 3. 我们在 effect cleanup 里 **不 destroy** mpv —— 让它跟着进程退出
+ *    被 OS 一并回收即可。这样 HMR 重新挂载组件时不会破坏现有 mpv。
+ * 4. observer/listener 是 per-mount 的，cleanup 时正常解绑，避免 HMR
+ *    后双倍订阅。
+ */
+import { useEffect } from "react";
 import {
   init,
-  destroy,
   observeProperties,
   listenEvents,
   setProperty,
   type MpvObservableProperty,
 } from "tauri-plugin-libmpv-api";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../store/playerStore";
 import {
   loadFile,
@@ -37,8 +48,60 @@ const OBSERVED = [
   ["eof-reached", "flag", "none"],
 ] as const satisfies MpvObservableProperty[];
 
-let initialized = false;
+let initPromise: Promise<void> | null = null;
 let lastSavedAt = 0;
+
+async function ensureInit(): Promise<void> {
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    const settings = loadSettings();
+    const baseOptions: Record<string, string | number | boolean> = {
+      hwdec: "auto-safe",
+      "keep-open": "yes",
+      // immediate 适配 wid 嵌入：进程启动即创建窗口，确保 plugin SetParent 时
+      // 子窗口已存在；空闲态也保证有黑色背景而不是透出桌面。
+      "force-window": "immediate",
+      background: "#000000",
+      osc: "no",
+      "input-default-bindings": "no",
+      "input-vo-keyboard": "no",
+      "msg-level": "all=v",
+      volume: settings.volume,
+      mute: settings.muted ? "yes" : "no",
+      speed: settings.speed,
+    };
+
+    try {
+      await init({
+        initialOptions: { ...baseOptions, vo: "gpu-next" },
+        observedProperties: OBSERVED,
+      });
+      console.log("[mpv] initialized with vo=gpu-next");
+    } catch (err1) {
+      console.warn("[mpv] gpu-next init failed, retrying with vo=gpu", err1);
+      try {
+        await init({
+          initialOptions: { ...baseOptions, vo: "gpu" },
+          observedProperties: OBSERVED,
+        });
+        console.log("[mpv] initialized with vo=gpu");
+      } catch (err2) {
+        const msg = err2 instanceof Error ? err2.message : String(err2);
+        console.error("[mpv] init failed twice", err2);
+        usePlayerStore.getState().setError(`mpv 初始化失败：${msg}`);
+        initPromise = null; // 允许下次重试
+        throw err2;
+      }
+    }
+
+    const store = usePlayerStore.getState();
+    store.setVolume(settings.volume);
+    store.setMuted(settings.muted);
+    store.setSpeed(settings.speed);
+    store.setMpvReady(true);
+  })();
+  return initPromise;
+}
 
 /** wait for mpvReady or timeout */
 async function waitForMpv(timeoutMs = 5000): Promise<boolean> {
@@ -51,61 +114,18 @@ async function waitForMpv(timeoutMs = 5000): Promise<boolean> {
 }
 
 export function useMpv(): void {
-  const ready = useRef(false);
-
   useEffect(() => {
-    if (initialized || ready.current) return;
-    ready.current = true;
-    initialized = true;
-
+    let cancelled = false;
     let unlistenProps: (() => void) | undefined;
     let unlistenEvents: (() => void) | undefined;
 
-    const setup = async () => {
-      const settings = loadSettings();
-
-      // 一次性尝试 init；如果 gpu-next vo 失败，回退 gpu
-      const baseOptions: Record<string, string | number | boolean> = {
-        hwdec: "auto-safe",
-        "keep-open": "yes",
-        "force-window": "yes",
-        osc: "no",
-        "input-default-bindings": "no",
-        "input-vo-keyboard": "no",
-        // 强制让 mpv 把日志事件抛上来，便于调试
-        "msg-level": "all=v",
-        volume: settings.volume,
-        mute: settings.muted ? "yes" : "no",
-        speed: settings.speed,
-      };
-
+    void (async () => {
       try {
-        await init({
-          initialOptions: { ...baseOptions, vo: "gpu-next" },
-          observedProperties: OBSERVED,
-        });
-        console.log("[mpv] initialized with vo=gpu-next");
-      } catch (err1) {
-        console.warn("[mpv] gpu-next init failed, retrying with vo=gpu", err1);
-        try {
-          await init({
-            initialOptions: { ...baseOptions, vo: "gpu" },
-            observedProperties: OBSERVED,
-          });
-          console.log("[mpv] initialized with vo=gpu");
-        } catch (err2) {
-          const msg = err2 instanceof Error ? err2.message : String(err2);
-          console.error("[mpv] init failed twice", err2);
-          usePlayerStore.getState().setError(`mpv 初始化失败：${msg}`);
-          return;
-        }
+        await ensureInit();
+      } catch {
+        return; // 错误已 toast
       }
-
-      const store = usePlayerStore.getState();
-      store.setVolume(settings.volume);
-      store.setMuted(settings.muted);
-      store.setSpeed(settings.speed);
-      store.setMpvReady(true);
+      if (cancelled) return;
 
       unlistenProps = await observeProperties(OBSERVED, (ev) => {
         const s = usePlayerStore.getState();
@@ -158,8 +178,12 @@ export function useMpv(): void {
         }
       });
 
+      if (cancelled) {
+        unlistenProps?.();
+        return;
+      }
+
       unlistenEvents = await listenEvents((ev) => {
-        // 把 mpv 内部日志透传到 devtools 便于排错
         if (ev.event === "log-message") {
           const lvl = ev.level;
           const text = `[mpv:${ev.prefix}] ${ev.text.trimEnd()}`;
@@ -187,26 +211,16 @@ export function useMpv(): void {
         }
       });
 
-    };
-
-    void setup();
+      if (cancelled) {
+        unlistenEvents?.();
+      }
+    })();
 
     return () => {
+      cancelled = true;
       unlistenProps?.();
       unlistenEvents?.();
-      void destroy();
-      initialized = false;
-      usePlayerStore.getState().setMpvReady(false);
-    };
-  }, []);
-
-  useEffect(() => {
-    const win = getCurrentWindow();
-    const unlistenP = win.onResized(() => {
-      // mpv handles its own sizing via attached window handle
-    });
-    return () => {
-      void unlistenP.then((fn) => fn());
+      // 注意：不 destroy()。mpv 实例随进程退出由 OS 回收。
     };
   }, []);
 }
