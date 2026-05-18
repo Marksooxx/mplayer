@@ -52,16 +52,28 @@ export function PlayerView() {
 
   useEffect(() => {
     const win = getCurrentWindow();
+    const setDragHover = usePlayerStore.getState().setDragHover;
     let unlisten: (() => void) | undefined;
     void win
       .onDragDropEvent((event) => {
-        if (event.payload.type === "drop") {
-          const paths = event.payload.paths;
-          if (paths.length === 0) return;
-          const startEmpty = playlist.length === 0;
-          const added = appendToPlaylist(paths);
-          if (startEmpty && added.length > 0) {
-            void playIndex(0);
+        switch (event.payload.type) {
+          case "enter":
+          case "over":
+            setDragHover(true);
+            break;
+          case "leave":
+            setDragHover(false);
+            break;
+          case "drop": {
+            setDragHover(false);
+            const paths = event.payload.paths;
+            if (paths.length === 0) return;
+            const startEmpty = playlist.length === 0;
+            const added = appendToPlaylist(paths);
+            if (startEmpty && added.length > 0) {
+              void playIndex(0);
+            }
+            break;
           }
         }
       })

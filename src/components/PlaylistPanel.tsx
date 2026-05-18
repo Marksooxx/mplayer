@@ -60,7 +60,7 @@ export function PlaylistPanel() {
 
   return (
     <aside
-      className="flex flex-col h-full border-l border-white/10 bg-neutral-950"
+      className="flex flex-col h-full border-l border-white/10 bg-neutral-950 anim-slide-right"
       style={{ width: 280, zIndex: 20 }}
     >
       <div className="flex items-center gap-1 px-3 py-2.5 border-b border-white/10">

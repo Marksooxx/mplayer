@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Download } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TopBar } from "./components/TopBar";
 import { PlayerView } from "./components/PlayerView";
@@ -59,6 +60,23 @@ function FullscreenAutoHide({ children }: { children: React.ReactNode }) {
   );
 }
 
+function DragHoverOverlay() {
+  const dragHover = usePlayerStore((s) => s.dragHover);
+  if (!dragHover) return null;
+  return (
+    <div
+      className="fixed inset-0 z-[300] flex items-center justify-center bg-primary-500/15 backdrop-blur-[1px] border-4 border-dashed border-primary-300 animate-[fadeIn_120ms_ease] pointer-events-none"
+      aria-hidden
+    >
+      <div className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl bg-neutral-900/90 border border-primary-400 shadow-2xl">
+        <Download size={48} className="text-primary-300" strokeWidth={1.5} />
+        <div className="text-lg font-medium text-white">放手即添加到播放列表</div>
+        <div className="text-xs text-white/50">支持 mp4 / mkv / mp3 等几乎所有格式</div>
+      </div>
+    </div>
+  );
+}
+
 function ErrorToast() {
   const errorMsg = usePlayerStore((s) => s.errorMsg);
   const setError = usePlayerStore((s) => s.setError);
@@ -66,7 +84,7 @@ function ErrorToast() {
   if (!errorMsg) return null;
   return (
     <div
-      className="absolute top-16 left-1/2 -translate-x-1/2 flex items-start gap-2 max-w-[80%] px-4 py-2 rounded-md bg-red-600 text-white text-sm shadow-2xl border border-red-400"
+      className="absolute top-16 left-1/2 -translate-x-1/2 flex items-start gap-2 max-w-[80%] px-4 py-2 rounded-md bg-red-600 text-white text-sm shadow-2xl border border-red-400 anim-slide-down"
       style={{ zIndex: 100 }}
     >
       <span className="break-words">{errorMsg}</span>
@@ -86,6 +104,21 @@ function App() {
   useMpv();
   useVideoMargins();
   useLaunchFiles();
+
+  // 首帧渲染后再让 Tauri 显示窗口，避免冷启动期间的白底闪烁。
+  // tauri.conf.json 已设 visible: false。
+  useEffect(() => {
+    let cancelled = false;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        void getCurrentWindow().show();
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
@@ -144,6 +177,7 @@ function App() {
 
       <SettingsPanel />
       <GotoFrameDialog />
+      <DragHoverOverlay />
     </div>
   );
 }

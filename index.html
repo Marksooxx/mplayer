@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>mplayer</title>
+    <!--
+      内联背景色：在 styles.css 加载前先把 html/body 染深，
+      避免冷启动期间的白底闪烁。Tauri 窗口 visible:false 会等 React
+      首次 commit 后才 show()，此时 body 已是深色，无白闪。
+    -->
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #0a0a0a;
+        color: #e5e7eb;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

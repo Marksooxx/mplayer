@@ -160,14 +160,14 @@ export function SettingsPanel() {
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 anim-fade-in"
       onClick={() => {
         cancelRecording();
         close();
       }}
     >
       <div
-        className="w-[520px] max-w-[92vw] max-h-[88vh] flex flex-col rounded-lg bg-neutral-900 border border-white/10 shadow-2xl"
+        className="w-[520px] max-w-[92vw] max-h-[88vh] flex flex-col rounded-lg bg-neutral-900 border border-white/10 shadow-2xl anim-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
