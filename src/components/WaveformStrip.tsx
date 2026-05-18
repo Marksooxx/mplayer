@@ -4,6 +4,27 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import WaveSurfer from "wavesurfer.js";
 import { usePlayerStore } from "../store/playerStore";
 import { seekAbsolute } from "../lib/mpv";
+import { useCursorAnimation } from "../hooks/useCursorAnimation";
+
+/** 波形上的播放光标。rAF 驱动 left:%，与 ControlBar 进度条同源同步、丝滑 */
+function WaveformCursor() {
+  const ref = useRef<HTMLDivElement>(null);
+  useCursorAnimation(
+    ref,
+    (el, p) => {
+      el.style.left = `${p * 100}%`;
+    },
+    "",
+    "left",
+  );
+  return (
+    <div
+      ref={ref}
+      className="absolute top-0 bottom-0 w-0.5 bg-primary-300/90 -translate-x-1/2 shadow-[0_0_4px_rgba(99,102,241,0.6)] pointer-events-none"
+      style={{ left: "0%" }}
+    />
+  );
+}
 
 interface PeaksData {
   peaks: number[];
@@ -165,9 +186,8 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
   };
 
   if (!item) return null;
-
-  const dur = duration > 0 ? duration : peakDuration;
-  const progress = dur > 0 ? Math.min(1, displayPosition / dur) : 0;
+  // 进度光标已交给 <WaveformCursor /> 内部 rAF 驱动；duration / peakDuration
+  // 仅在 handleClick (上面已用 closure 引用) 内使用
 
   return (
     <div
@@ -181,17 +201,10 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
         onClick={handleClick}
         title="点击跳转到该位置"
       />
-      {/* 与 containerRef 同一区域的光标层：left:% 直接相对该区域，无需 + padding 偏移
-          非拖动时加 100ms 线性过渡，消除 mpv 离散 time-pos 步进的"瞬移"感 */}
+      {/* 与 containerRef 同一区域的光标层：rAF 子组件接管，不依赖父组件 progress 变化重渲染 */}
       {!loading && !failed && fileLoaded && (
         <div className="absolute inset-x-4 inset-y-0 pointer-events-none">
-          <div
-            className="absolute top-0 bottom-0 w-0.5 bg-primary-300/90 -translate-x-1/2 shadow-[0_0_4px_rgba(99,102,241,0.6)]"
-            style={{
-              left: `${progress * 100}%`,
-              transition: dragPosition !== null ? "none" : "left 100ms linear",
-            }}
-          />
+          <WaveformCursor />
         </div>
       )}
       {loading && (

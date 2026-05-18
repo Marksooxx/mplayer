@@ -36,8 +36,53 @@ import {
 import { playNext, playPrev } from "../hooks/useMpv";
 import { formatTime } from "../lib/format";
 import { TrackMenu } from "./TrackMenu";
+import { useCursorAnimation } from "../hooks/useCursorAnimation";
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+/** 进度条已播放填充。rAF 驱动 scaleX，60Hz 与屏幕同步插值，无 React 重渲染 */
+function ProgressFill() {
+  const ref = useRef<HTMLDivElement>(null);
+  useCursorAnimation(
+    ref,
+    (el, p) => {
+      el.style.transform = `scaleX(${p})`;
+    },
+    "height 150ms ease",
+    "transform",
+  );
+  return (
+    <div
+      ref={ref}
+      className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full origin-left pointer-events-none"
+      style={{ transform: "scaleX(0)", willChange: "transform" }}
+    />
+  );
+}
+
+/** 进度条圆点（thumb）。rAF 驱动 left:%；transform 留给 translate(-50%, -50%) */
+function ProgressThumb({ hasMedia }: { hasMedia: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useCursorAnimation(
+    ref,
+    (el, p) => {
+      el.style.left = `${p * 100}%`;
+    },
+    "width 150ms ease, height 150ms ease, opacity 150ms ease",
+    "left",
+  );
+  return (
+    <div
+      ref={ref}
+      className="absolute top-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md pointer-events-none"
+      style={{
+        left: "0%",
+        transform: "translate(-50%, -50%)",
+        opacity: hasMedia ? 1 : 0,
+      }}
+    />
+  );
+}
 
 function IconBtn({
   onClick,
@@ -138,8 +183,8 @@ export function ControlBar() {
   }, [volume, muted]);
 
   const hasMedia = currentIndex >= 0 && duration > 0;
+  // displayPos 仅用于时间文字显示；进度条 fill/thumb 由 rAF 驱动的子组件接管
   const displayPos = dragValue ?? position;
-  const progress = hasMedia ? Math.min(1, Math.max(0, displayPos / duration)) : 0;
 
   const handlePlayPause = () => {
     if (currentIndex < 0) return;
@@ -256,32 +301,9 @@ export function ControlBar() {
       >
         {/* 背景轨道 */}
         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-[height] duration-150" />
-        {/* 已播放填充：用 scaleX 走 GPU 合成；非拖动状态加 100ms 线性过渡，
-            消除 mpv 离散 time-pos 步进造成的"瞬移"感（暂停/恢复时尤其明显） */}
-        <div
-          className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full origin-left"
-          style={{
-            transform: `scaleX(${progress})`,
-            willChange: "transform",
-            transition:
-              dragValue !== null
-                ? "height 150ms ease"
-                : "transform 100ms linear, height 150ms ease",
-          }}
-        />
-        {/* 圆点：用 left:% 相对父容器定位（transform 百分比是相对自身宽度，不能用） */}
-        <div
-          className="absolute top-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md pointer-events-none"
-          style={{
-            left: `${progress * 100}%`,
-            transform: "translate(-50%, -50%)",
-            opacity: hasMedia ? 1 : 0,
-            transition:
-              dragValue !== null
-                ? "width 150ms ease, height 150ms ease, opacity 150ms ease"
-                : "left 100ms linear, width 150ms ease, height 150ms ease, opacity 150ms ease",
-          }}
-        />
+        {/* 已播放填充 + 圆点：rAF 驱动的小组件，避免 60Hz 大组件重渲染 */}
+        <ProgressFill />
+        <ProgressThumb hasMedia={hasMedia} />
         {hoverInfo && hasMedia && (
           <div
             className="absolute -top-8 -translate-x-1/2 px-2 py-0.5 rounded text-xs tabular-nums bg-black/90 border border-white/15 text-white whitespace-nowrap pointer-events-none shadow-lg"

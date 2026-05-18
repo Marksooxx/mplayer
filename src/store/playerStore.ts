@@ -23,6 +23,8 @@ interface PlayerState {
 
   isPlaying: boolean;
   position: number;
+  /** 上一次 setPosition 时的本地时间戳（performance.now()）；用于 rAF 插值 */
+  positionObservedAt: number;
   duration: number;
 
   volume: number;
@@ -90,6 +92,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
 
   isPlaying: false,
   position: 0,
+  positionObservedAt: 0,
   duration: 0,
 
   volume: 80,
@@ -152,7 +155,8 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   setSelectedIndex: (idx) => set({ selectedIndex: idx }),
 
   setIsPlaying: (v) => set({ isPlaying: v }),
-  setPosition: (v) => set({ position: v }),
+  setPosition: (v) =>
+    set({ position: v, positionObservedAt: performance.now() }),
   setDuration: (v) => set({ duration: v }),
 
   setVolume: (v) => set({ volume: Math.max(0, Math.min(100, v)) }),
