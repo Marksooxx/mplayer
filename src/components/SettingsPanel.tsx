@@ -1,5 +1,14 @@
-import { X } from "lucide-react";
+import { useEffect } from "react";
+import { Keyboard, RotateCcw, X } from "lucide-react";
 import { useSettingsStore } from "../store/settingsStore";
+import {
+  ACTION_LABELS,
+  ACTION_ORDER,
+  displayCombo,
+  eventToCombo,
+  isPureModifier,
+  type ShortcutAction,
+} from "../lib/shortcuts";
 
 function Toggle({
   checked,
@@ -37,6 +46,44 @@ function Toggle({
   );
 }
 
+function ShortcutRow({ action }: { action: ShortcutAction }) {
+  const combo = useSettingsStore((s) => s.shortcuts[action]);
+  const recording = useSettingsStore((s) => s.recordingAction === action);
+  const beginRecording = useSettingsStore((s) => s.beginRecording);
+  const setShortcut = useSettingsStore((s) => s.setShortcut);
+
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-1.5 rounded hover:bg-white/5">
+      <span className="text-sm text-white/85">{ACTION_LABELS[action]}</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => beginRecording(action)}
+          className={`min-w-[130px] h-7 px-2 rounded text-xs tabular-nums border transition-colors ${
+            recording
+              ? "border-primary-400 bg-primary-500/20 text-primary-200 animate-pulse"
+              : combo
+                ? "border-white/15 bg-white/5 text-white/90 hover:border-white/30"
+                : "border-dashed border-white/20 text-white/40 hover:border-white/40"
+          }`}
+        >
+          {recording ? "请按键…（Esc 取消）" : displayCombo(combo)}
+        </button>
+        {combo && !recording && (
+          <button
+            type="button"
+            title="清除"
+            onClick={() => setShortcut(action, "")}
+            className="w-7 h-7 inline-flex items-center justify-center rounded text-white/40 hover:text-white/80 hover:bg-white/10"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPanel() {
   const open = useSettingsStore((s) => s.settingsOpen);
   const close = useSettingsStore((s) => s.closeSettings);
@@ -44,19 +91,44 @@ export function SettingsPanel() {
   const topBarHidden = useSettingsStore((s) => s.topBarHidden);
   const setTopBarAutoHide = useSettingsStore((s) => s.setTopBarAutoHide);
   const setTopBarHidden = useSettingsStore((s) => s.setTopBarHidden);
+  const recordingAction = useSettingsStore((s) => s.recordingAction);
+  const cancelRecording = useSettingsStore((s) => s.cancelRecording);
+  const setShortcut = useSettingsStore((s) => s.setShortcut);
+  const resetShortcuts = useSettingsStore((s) => s.resetShortcuts);
+
+  // 录键全局监听：在 capture 阶段拿，避免与全局 KeyboardShortcuts 冲突
+  useEffect(() => {
+    if (!recordingAction) return;
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        cancelRecording();
+        return;
+      }
+      if (isPureModifier(e.key)) return; // 等待用户再按主键
+      const combo = eventToCombo(e);
+      setShortcut(recordingAction, combo);
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () => window.removeEventListener("keydown", handler, { capture: true });
+  }, [recordingAction, cancelRecording, setShortcut]);
 
   if (!open) return null;
 
   return (
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60"
-      onClick={close}
+      onClick={() => {
+        cancelRecording();
+        close();
+      }}
     >
       <div
-        className="w-[420px] max-w-[90vw] rounded-lg bg-neutral-900 border border-white/10 shadow-2xl"
+        className="w-[520px] max-w-[92vw] max-h-[88vh] flex flex-col rounded-lg bg-neutral-900 border border-white/10 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
           <h2 className="text-base font-medium text-white">设置</h2>
           <button
             onClick={close}
@@ -67,7 +139,8 @@ export function SettingsPanel() {
           </button>
         </div>
 
-        <div className="p-2">
+        <div className="flex-1 overflow-y-auto p-2">
+          {/* 界面 */}
           <div className="px-3 py-2 text-xs text-white/40 uppercase tracking-wide">界面</div>
           <Toggle
             label="顶部文件名条悬浮显示"
@@ -82,13 +155,36 @@ export function SettingsPanel() {
             label="完全隐藏顶部文件名条"
             description="关掉浮动显示功能，顶部永远不会出现文件名条"
             checked={topBarHidden}
-            onChange={(v) => {
-              setTopBarHidden(v);
-            }}
+            onChange={(v) => setTopBarHidden(v)}
           />
+
+          {/* 快捷键 */}
+          <div className="flex items-center justify-between mt-2 px-3 py-2">
+            <div className="flex items-center gap-1.5 text-xs text-white/40 uppercase tracking-wide">
+              <Keyboard size={12} /> 键盘快捷键
+            </div>
+            <button
+              type="button"
+              onClick={resetShortcuts}
+              className="inline-flex items-center gap-1 h-7 px-2 rounded text-xs text-white/60 hover:text-white hover:bg-white/10"
+              title="全部恢复默认"
+            >
+              <RotateCcw size={12} /> 恢复默认
+            </button>
+          </div>
+          <div className="px-1 pb-2">
+            {ACTION_ORDER.map((act) => (
+              <ShortcutRow key={act} action={act} />
+            ))}
+          </div>
+          <div className="px-3 py-2 text-[11px] text-white/35 leading-relaxed">
+            点击按键标签后按下任意组合键即可绑定。同一组合键被绑到多个动作时，旧动作会被自动清空。
+            <br />
+            清除后该动作不响应任何按键（仍可用控件操作）。
+          </div>
         </div>
 
-        <div className="px-4 py-3 border-t border-white/10 text-xs text-white/40">
+        <div className="px-4 py-3 border-t border-white/10 text-xs text-white/40 shrink-0">
           mplayer · Tauri 2 + HeroUI v3 + libmpv
         </div>
       </div>
