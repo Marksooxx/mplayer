@@ -5,6 +5,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import {
   frameBackStep,
   frameStep,
+  frameStepBy,
   seekRelative,
   setMutedProp,
   setVolumeProp,
@@ -70,6 +71,18 @@ function dispatch(
       break;
     case "frameForward":
       if (hasMedia) void frameStep();
+      break;
+    case "frameJumpBack":
+      if (hasMedia) {
+        const n = useSettingsStore.getState().frameStepMultiplier;
+        void frameStepBy(-n);
+      }
+      break;
+    case "frameJumpForward":
+      if (hasMedia) {
+        const n = useSettingsStore.getState().frameStepMultiplier;
+        void frameStepBy(n);
+      }
       break;
     case "volumeUp":
       void setVolumeProp(Math.min(100, state.volume + 5));

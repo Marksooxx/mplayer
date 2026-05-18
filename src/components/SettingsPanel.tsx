@@ -5,6 +5,8 @@ import { useSettingsStore } from "../store/settingsStore";
 import {
   ACTION_LABELS,
   ACTION_ORDER,
+  FRAME_STEP_MAX,
+  FRAME_STEP_MIN,
   displayCombo,
   eventToCombo,
   isPureModifier,
@@ -129,6 +131,8 @@ export function SettingsPanel() {
   const setShowWaveform = useSettingsStore((s) => s.setShowWaveform);
   const rememberPosition = useSettingsStore((s) => s.rememberPosition);
   const setRememberPosition = useSettingsStore((s) => s.setRememberPosition);
+  const frameStepMultiplier = useSettingsStore((s) => s.frameStepMultiplier);
+  const setFrameStepMultiplier = useSettingsStore((s) => s.setFrameStepMultiplier);
   const recordingAction = useSettingsStore((s) => s.recordingAction);
   const cancelRecording = useSettingsStore((s) => s.cancelRecording);
   const setShortcut = useSettingsStore((s) => s.setShortcut);
@@ -210,6 +214,41 @@ export function SettingsPanel() {
             onChange={(v) => setRememberPosition(v)}
           />
           <ClearPositionsButton />
+          <div className="flex items-center justify-between gap-3 p-3 rounded-md hover:bg-white/5">
+            <div className="flex-1">
+              <div className="text-sm text-white/90">Shift+←/→ 步进帧数</div>
+              <div className="text-xs text-white/50 mt-0.5">
+                介于"裸键 ±5 秒"与"Ctrl 单帧"之间的中档跳转。范围 {FRAME_STEP_MIN} – {FRAME_STEP_MAX}（默认 3）。
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setFrameStepMultiplier(frameStepMultiplier - 1)}
+                disabled={frameStepMultiplier <= FRAME_STEP_MIN}
+                className="w-7 h-7 rounded text-sm text-white/70 border border-white/15 hover:border-white/40 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                −
+              </button>
+              <input
+                type="number"
+                min={FRAME_STEP_MIN}
+                max={FRAME_STEP_MAX}
+                value={frameStepMultiplier}
+                onChange={(e) => setFrameStepMultiplier(Number(e.target.value))}
+                className="w-14 h-7 px-2 text-center text-sm tabular-nums bg-neutral-800 border border-white/10 focus:border-primary-400 outline-none rounded text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              />
+              <button
+                type="button"
+                onClick={() => setFrameStepMultiplier(frameStepMultiplier + 1)}
+                disabled={frameStepMultiplier >= FRAME_STEP_MAX}
+                className="w-7 h-7 rounded text-sm text-white/70 border border-white/15 hover:border-white/40 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                +
+              </button>
+              <span className="ml-1 text-xs text-white/50">帧</span>
+            </div>
+          </div>
 
           {/* 快捷键 */}
           <div className="flex items-center justify-between mt-2 px-3 py-2">

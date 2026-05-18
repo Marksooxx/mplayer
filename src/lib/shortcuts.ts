@@ -12,6 +12,8 @@ export type ShortcutAction =
   | "seekForward"
   | "frameBack"
   | "frameForward"
+  | "frameJumpBack"
+  | "frameJumpForward"
   | "gotoFrame"
   | "volumeUp"
   | "volumeDown"
@@ -27,6 +29,8 @@ export const ACTION_ORDER: ShortcutAction[] = [
   "seekForward",
   "frameBack",
   "frameForward",
+  "frameJumpBack",
+  "frameJumpForward",
   "gotoFrame",
   "volumeUp",
   "volumeDown",
@@ -43,6 +47,8 @@ export const ACTION_LABELS: Record<ShortcutAction, string> = {
   seekForward: "快进 5 秒",
   frameBack: "单帧后退",
   frameForward: "单帧前进",
+  frameJumpBack: "多帧后退（N 帧）",
+  frameJumpForward: "多帧前进（N 帧）",
   gotoFrame: "跳转到指定帧",
   volumeUp: "音量 +5",
   volumeDown: "音量 -5",
@@ -59,6 +65,8 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   seekForward: "ArrowRight",
   frameBack: "Ctrl+ArrowLeft",
   frameForward: "Ctrl+ArrowRight",
+  frameJumpBack: "Shift+ArrowLeft",
+  frameJumpForward: "Shift+ArrowRight",
   gotoFrame: "Ctrl+F",
   volumeUp: "ArrowUp",
   volumeDown: "ArrowDown",
@@ -68,6 +76,10 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   prevTrack: "PageUp",
   nextTrack: "PageDown",
 };
+
+export const FRAME_STEP_MIN = 1;
+export const FRAME_STEP_MAX = 100;
+export const FRAME_STEP_DEFAULT = 3;
 
 /** 从 KeyboardEvent 取出标准化 combo 字符串。 */
 export function eventToCombo(e: KeyboardEvent): string {

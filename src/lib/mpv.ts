@@ -43,6 +43,33 @@ export async function frameBackStep(): Promise<void> {
   await command("frame-back-step");
 }
 
+/**
+ * 多帧跳转。优先用 fps 算精确时间 seek（一次 IPC），失败回退到逐帧调用。
+ * - count > 0 向前；count < 0 向后；0 不动。
+ * - audio-only 拿不到 fps 时按 0.04s/帧（25fps 兜底）算时间。
+ */
+export async function frameStepBy(count: number): Promise<void> {
+  if (count === 0) return;
+  try {
+    let fps: number | null = null;
+    try {
+      const v = await getProperty("container-fps", "double");
+      if (typeof v === "number" && v > 0) fps = v;
+    } catch { /* ignore */ }
+    if (fps === null) fps = 25; // 兜底
+    const delta = count / fps;
+    // relative+exact 保证按时间精确 seek 而不是跳到关键帧
+    await command("seek", [delta, "relative+exact"]);
+  } catch (err) {
+    console.warn("[mpv] frameStepBy seek failed, falling back to frame-step loop", err);
+    const n = Math.abs(count);
+    for (let i = 0; i < n; i++) {
+      if (count > 0) await frameStep();
+      else await frameBackStep();
+    }
+  }
+}
+
 export async function setVolumeProp(volume: number): Promise<void> {
   await setProperty("volume", Math.max(0, Math.min(100, volume)));
 }

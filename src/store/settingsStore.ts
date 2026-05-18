@@ -1,5 +1,11 @@
 import { create } from "zustand";
-import { DEFAULT_SHORTCUTS, type ShortcutAction } from "../lib/shortcuts";
+import {
+  DEFAULT_SHORTCUTS,
+  FRAME_STEP_DEFAULT,
+  FRAME_STEP_MAX,
+  FRAME_STEP_MIN,
+  type ShortcutAction,
+} from "../lib/shortcuts";
 
 const STORAGE_KEY = "mplayer:ui-settings";
 const SCHEMA_VERSION = 2;
@@ -10,6 +16,7 @@ export interface UiSettings {
   topBarHidden: boolean; // true = 永久隐藏顶栏
   showWaveform: boolean; // 底部波形条显隐
   rememberPosition: boolean; // 记忆每个文件上次播放位置
+  frameStepMultiplier: number; // Shift+←/→ 多帧步进的帧数
   shortcuts: Record<ShortcutAction, string>;
 }
 
@@ -19,8 +26,15 @@ const defaults: UiSettings = {
   topBarHidden: false,
   showWaveform: true,
   rememberPosition: true,
+  frameStepMultiplier: FRAME_STEP_DEFAULT,
   shortcuts: { ...DEFAULT_SHORTCUTS },
 };
+
+function clampMultiplier(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return FRAME_STEP_DEFAULT;
+  return Math.max(FRAME_STEP_MIN, Math.min(FRAME_STEP_MAX, Math.round(n)));
+}
 
 function load(): UiSettings {
   try {
@@ -32,6 +46,7 @@ function load(): UiSettings {
       ...defaults,
       ...parsed,
       shortcuts: { ...DEFAULT_SHORTCUTS, ...(parsed.shortcuts ?? {}) },
+      frameStepMultiplier: clampMultiplier(parsed.frameStepMultiplier),
     };
 
     // 强制迁移：旧版本默认全屏键是 "F"（与浏览器/系统 Find/全屏键冲突，部分焦点
@@ -70,6 +85,7 @@ interface SettingsState extends UiSettings {
   setTopBarHidden: (v: boolean) => void;
   setShowWaveform: (v: boolean) => void;
   setRememberPosition: (v: boolean) => void;
+  setFrameStepMultiplier: (v: number) => void;
   openSettings: () => void;
   closeSettings: () => void;
 
@@ -114,6 +130,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setRememberPosition: (v) => {
     set({ rememberPosition: v });
     persist({ ...get(), rememberPosition: v });
+  },
+  setFrameStepMultiplier: (v) => {
+    const clamped = clampMultiplier(v);
+    set({ frameStepMultiplier: clamped });
+    persist({ ...get(), frameStepMultiplier: clamped });
   },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false, recordingAction: null }),
