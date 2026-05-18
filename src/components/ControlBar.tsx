@@ -11,7 +11,10 @@ import {
   Pin,
   PinOff,
   Play,
+  Repeat,
+  Repeat1,
   Settings,
+  Shuffle,
   SkipBack,
   SkipForward,
   Volume,
@@ -96,6 +99,8 @@ export function ControlBar() {
   const openSettings = useSettingsStore((s) => s.openSettings);
   const alwaysOnTop = useSettingsStore((s) => s.alwaysOnTop);
   const toggleAlwaysOnTop = useSettingsStore((s) => s.toggleAlwaysOnTop);
+  const playbackMode = useSettingsStore((s) => s.playbackMode);
+  const cyclePlaybackMode = useSettingsStore((s) => s.cyclePlaybackMode);
 
   // dragValue 提升到 store，让 WaveformStrip 能跟随拖动实时移动光标
   const dragValue = usePlayerStore((s) => s.dragPosition);
@@ -372,6 +377,25 @@ export function ControlBar() {
           active={!playlistCollapsed}
         >
           <ListMusic size={18} />
+        </IconBtn>
+        <IconBtn
+          onClick={cyclePlaybackMode}
+          label={
+            playbackMode === "loop-playlist"
+              ? "列表循环 (Ctrl+R 切换)"
+              : playbackMode === "loop-single"
+                ? "单曲循环 (Ctrl+R 切换)"
+                : "随机播放 (Ctrl+R 切换)"
+          }
+          active={playbackMode !== "loop-playlist"}
+        >
+          {playbackMode === "loop-playlist" ? (
+            <Repeat size={18} />
+          ) : playbackMode === "loop-single" ? (
+            <Repeat1 size={18} />
+          ) : (
+            <Shuffle size={18} />
+          )}
         </IconBtn>
         <IconBtn
           onClick={toggleAlwaysOnTop}

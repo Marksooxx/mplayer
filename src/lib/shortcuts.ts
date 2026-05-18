@@ -21,6 +21,7 @@ export type ShortcutAction =
   | "fullscreen"
   | "exitFullscreen"
   | "alwaysOnTop"
+  | "cyclePlaybackMode"
   | "prevTrack"
   | "nextTrack";
 
@@ -39,6 +40,7 @@ export const ACTION_ORDER: ShortcutAction[] = [
   "fullscreen",
   "exitFullscreen",
   "alwaysOnTop",
+  "cyclePlaybackMode",
   "prevTrack",
   "nextTrack",
 ];
@@ -58,6 +60,7 @@ export const ACTION_LABELS: Record<ShortcutAction, string> = {
   fullscreen: "切换全屏",
   exitFullscreen: "退出全屏",
   alwaysOnTop: "窗口置顶切换",
+  cyclePlaybackMode: "播放模式切换（列表/单曲/随机）",
   prevTrack: "上一个视频",
   nextTrack: "下一个视频",
 };
@@ -77,6 +80,7 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   fullscreen: "Ctrl+Enter",
   exitFullscreen: "Escape",
   alwaysOnTop: "Ctrl+T",
+  cyclePlaybackMode: "Ctrl+R",
   prevTrack: "PageUp",
   nextTrack: "PageDown",
 };

@@ -43,6 +43,7 @@ import {
   bootstrapSettings,
   useSettingsStore,
 } from "../store/settingsStore";
+import { pickNextIndex } from "../lib/playback-mode";
 
 const OBSERVED = [
   ["pause", "flag"],
@@ -62,6 +63,29 @@ const OBSERVED = [
 
 let initPromise: Promise<void> | null = null;
 let lastSavedAt = 0;
+
+/** 文件自然播完时根据 playbackMode 决定下一步：循环 / 单曲 / 随机 */
+async function handleEof(): Promise<void> {
+  const mode = useSettingsStore.getState().playbackMode;
+  const s = usePlayerStore.getState();
+  const total = s.playlist.length;
+  if (total === 0) return;
+
+  if (mode === "loop-single") {
+    // 单曲循环：seek 到开头并恢复播放（mpv 在 EOF 后 pause=true，先放回去再 seek）
+    try {
+      await seekAbsolute(0);
+      await setProperty("pause", false);
+    } catch (err) {
+      console.error("[mpv] loop-single restart failed", err);
+    }
+    return;
+  }
+
+  const next = pickNextIndex(mode, s.currentIndex, total);
+  if (next < 0) return; // 不应到这里（loop-playlist/shuffle 都不返回 -1）
+  void playIndex(next);
+}
 
 async function ensureInit(): Promise<void> {
   if (initPromise) return initPromise;
@@ -200,10 +224,7 @@ export function useMpv(): void {
             break;
           case "eof-reached":
             if (ev.data) {
-              const next = s.currentIndex + 1;
-              if (next < s.playlist.length) {
-                void playIndex(next);
-              }
+              void handleEof();
             }
             break;
           case "width":

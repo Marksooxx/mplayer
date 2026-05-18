@@ -111,6 +111,9 @@ function dispatch(
     case "alwaysOnTop":
       useSettingsStore.getState().toggleAlwaysOnTop();
       break;
+    case "cyclePlaybackMode":
+      useSettingsStore.getState().cyclePlaybackMode();
+      break;
   }
 }
 

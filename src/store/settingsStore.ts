@@ -6,6 +6,11 @@ import {
   FRAME_STEP_MIN,
   type ShortcutAction,
 } from "../lib/shortcuts";
+import {
+  PLAYBACK_MODE_DEFAULT,
+  nextMode,
+  type PlaybackMode,
+} from "../lib/playback-mode";
 import { loadUiRaw, persistUi } from "../lib/persist";
 
 const SCHEMA_VERSION = 2;
@@ -18,6 +23,7 @@ export interface UiSettings {
   rememberPosition: boolean; // 记忆每个文件上次播放位置
   frameStepMultiplier: number; // Shift+←/→ 多帧步进的帧数
   alwaysOnTop: boolean; // 窗口置顶
+  playbackMode: PlaybackMode; // 列表循环 / 单曲循环 / 随机
   shortcuts: Record<ShortcutAction, string>;
 }
 
@@ -29,6 +35,7 @@ const defaults: UiSettings = {
   rememberPosition: true,
   frameStepMultiplier: FRAME_STEP_DEFAULT,
   alwaysOnTop: false,
+  playbackMode: PLAYBACK_MODE_DEFAULT,
   shortcuts: { ...DEFAULT_SHORTCUTS },
 };
 
@@ -73,6 +80,8 @@ interface SettingsState extends UiSettings {
   setFrameStepMultiplier: (v: number) => void;
   setAlwaysOnTop: (v: boolean) => void;
   toggleAlwaysOnTop: () => void;
+  setPlaybackMode: (m: PlaybackMode) => void;
+  cyclePlaybackMode: () => void;
   openSettings: () => void;
   closeSettings: () => void;
 
@@ -101,6 +110,7 @@ function stripUi(s: SettingsState): UiSettings {
     rememberPosition: s.rememberPosition,
     frameStepMultiplier: s.frameStepMultiplier,
     alwaysOnTop: s.alwaysOnTop,
+    playbackMode: s.playbackMode,
     shortcuts: s.shortcuts,
   };
 }
@@ -150,6 +160,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const v = !get().alwaysOnTop;
     set({ alwaysOnTop: v });
     persistIfBootstrapped(get, { alwaysOnTop: v });
+  },
+  setPlaybackMode: (m) => {
+    set({ playbackMode: m });
+    persistIfBootstrapped(get, { playbackMode: m });
+  },
+  cyclePlaybackMode: () => {
+    const m = nextMode(get().playbackMode);
+    set({ playbackMode: m });
+    persistIfBootstrapped(get, { playbackMode: m });
   },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false, recordingAction: null }),
