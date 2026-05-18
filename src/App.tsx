@@ -12,6 +12,7 @@ import { GotoFrameDialog } from "./components/GotoFrameDialog";
 import { useMpv } from "./hooks/useMpv";
 import { useVideoMargins } from "./hooks/useVideoMargins";
 import { useLaunchFiles } from "./hooks/useLaunchFiles";
+import { useGracefulShutdown } from "./hooks/useGracefulShutdown";
 import { usePlayerStore } from "./store/playerStore";
 import { useSettingsStore } from "./store/settingsStore";
 
@@ -104,6 +105,7 @@ function App() {
   useMpv();
   useVideoMargins();
   useLaunchFiles();
+  useGracefulShutdown();
 
   // 首帧渲染后再让 Tauri 显示窗口，避免冷启动期间的白底闪烁。
   // tauri.conf.json 已设 visible: false。

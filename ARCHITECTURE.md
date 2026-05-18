@@ -573,6 +573,14 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 - **`tauri-plugin-single-instance`**：第二个 mplayer.exe 启动时把 argv 转发到已有窗口，`unminimize + set_focus + emit("open-files")`，避免重复加载 94MB libmpv
 - **`std::mem::take` 消费 launch args**：`get_launch_args` 调一次就清空，HMR / 重渲染重复 invoke 不会重复入队同一文件
 
+### 7.7 文件句柄与优雅关闭
+
+- **关闭时 destroy mpv**：`useGracefulShutdown` hook 拦截 `onCloseRequested`，先 `await destroy()` 让 mpv 解码线程、音频输出、文件 I/O 都有机会 flush 后再退出。500ms 超时兜底——mpv 万一卡死也不会让用户关不掉窗口。完成后 `window.destroy()` 强制销毁窗口（绕过 `CloseRequested`）。
+- **回退兜底**：即使本钩子不执行，Windows 进程退出时 OS 也会一次性回收所有句柄；这一层只是让 mpv 的内部状态走完析构流程，行为更像 VLC 而非 Windows Media Player。
+- **播放期间的文件锁定**：mpv 在 Windows 上经 C runtime `_wfopen` 打开文件，**默认 share mode 是 `_SH_DENYNO`**——理论上其他进程可以读/写/删/改名这个文件。验证方法：播放某个 .mp4 时在资源管理器里删除它，若 Windows 不报"文件正在被使用"即说明锁定行为已经像 VLC 那样宽松。
+- **wavesurfer 的 `<audio>` 句柄**：通过 Tauri `convertFileSrc(path)` 走 `asset://` 协议，由 Tauri 资源处理器**按需短打开**——webview fetch 一段、Tauri 开一次文件读完关一次，并非长时间持有句柄。`ws.destroy()` 时 media element 也会释放所有引用。
+- **symphonia peaks 计算**：用 Rust `File::open` + RAII，函数返回时 `Drop` 自动关文件。
+
 ---
 
 ## 8. 已知限制与未来工作
