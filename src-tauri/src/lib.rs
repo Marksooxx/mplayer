@@ -1,6 +1,7 @@
 mod peaks;
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::{Emitter, Manager};
 
@@ -30,12 +31,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // 第二个实例启动时被调用：把它的 argv 路径推给已有窗口
             let paths = collect_path_args(args);
             if !paths.is_empty() {
                 let _ = app.emit("open-files", &paths);
             }
-            // 把现有窗口拉到前台
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.set_focus();
@@ -50,6 +49,20 @@ pub fn run() {
             peaks::calculate_peaks,
             get_launch_args
         ])
+        .setup(|app| {
+            // 兜底显示窗口：tauri.conf.json 启动是 visible:false（避免冷启动白闪），
+            // 由前端 React 首帧后调 show()。如果前端因任何原因失败（权限缺失、JS 异常、
+            // WebView2 异常），用一个独立线程在 1.5 秒后强行 show() 一次，
+            // 保证用户至少看到窗口，能进一步排错（F12 console）。
+            if let Some(w) = app.get_webview_window("main") {
+                let w_clone = w.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let _ = w_clone.show();
+                });
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

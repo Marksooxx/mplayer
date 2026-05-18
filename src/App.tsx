@@ -107,12 +107,15 @@ function App() {
 
   // 首帧渲染后再让 Tauri 显示窗口，避免冷启动期间的白底闪烁。
   // tauri.conf.json 已设 visible: false。
+  // 即使本路径失败，Rust setup 也会在 1.5s 后兜底 show()，保证窗口一定出现。
   useEffect(() => {
     let cancelled = false;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (cancelled) return;
-        void getCurrentWindow().show();
+        getCurrentWindow()
+          .show()
+          .catch((err) => console.error("[startup] window.show failed", err));
       });
     });
     return () => {
