@@ -17,6 +17,7 @@ import {
   observeProperties,
   listenEvents,
   setProperty,
+  getProperty,
   type MpvObservableProperty,
 } from "tauri-plugin-libmpv-api";
 import { usePlayerStore } from "../store/playerStore";
@@ -48,6 +49,7 @@ const OBSERVED = [
   ["eof-reached", "flag", "none"],
   ["width", "int64", "none"],
   ["height", "int64", "none"],
+  ["container-fps", "double", "none"],
 ] as const satisfies MpvObservableProperty[];
 
 let initPromise: Promise<void> | null = null;
@@ -178,6 +180,9 @@ export function useMpv(): void {
           case "height":
             s.setVideoSize(s.videoWidth, ev.data ?? 0);
             break;
+          case "container-fps":
+            s.setFps(ev.data ?? 0);
+            break;
         }
       });
 
@@ -185,6 +190,29 @@ export function useMpv(): void {
         unlistenProps?.();
         return;
       }
+
+      // 关键补救：mpv 在 init 时就发了一轮"current value"事件，但那时
+      // 我们的 JS observeProperties 还没挂上，事件丢了。这里显式 getProperty
+      // 把当前真实值同步回 store，否则首次按 Space 会读到默认值 isPlaying=false
+      // 然后调用 setPaused(false) ≡ 空操作。
+      void (async () => {
+        try {
+          const pause = await getProperty("pause", "flag");
+          if (typeof pause === "boolean") usePlayerStore.getState().setIsPlaying(!pause);
+        } catch { /* ignore */ }
+        try {
+          const vol = await getProperty("volume", "double");
+          if (typeof vol === "number") usePlayerStore.getState().setVolume(vol);
+        } catch { /* ignore */ }
+        try {
+          const muted = await getProperty("mute", "flag");
+          if (typeof muted === "boolean") usePlayerStore.getState().setMuted(muted);
+        } catch { /* ignore */ }
+        try {
+          const sp = await getProperty("speed", "double");
+          if (typeof sp === "number") usePlayerStore.getState().setSpeed(sp);
+        } catch { /* ignore */ }
+      })();
 
       unlistenEvents = await listenEvents((ev) => {
         if (ev.event === "log-message") {
@@ -206,6 +234,7 @@ export function useMpv(): void {
           const s = usePlayerStore.getState();
           s.setFileLoaded(false);
           s.setVideoSize(0, 0);
+          s.setFps(0);
           return;
         }
         if (ev.event === "end-file") {
@@ -245,6 +274,7 @@ export async function playIndex(index: number): Promise<void> {
   s.setError(null);
   s.setFileLoaded(false);
   s.setVideoSize(0, 0);
+  s.setFps(0);
 
   if (!s.mpvReady) {
     console.log("[mpv] waiting for ready before loadfile", item.path);

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { DEFAULT_SHORTCUTS, type ShortcutAction } from "../lib/shortcuts";
 
 const STORAGE_KEY = "mplayer:ui-settings";
+const SCHEMA_VERSION = 2;
 
 export interface UiSettings {
   playlistCollapsed: boolean;
@@ -22,12 +23,22 @@ function load(): UiSettings {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw);
-    // 合并 shortcuts，保证新版本新增的 action 也有默认值
-    return {
+
+    const merged: UiSettings = {
       ...defaults,
       ...parsed,
       shortcuts: { ...DEFAULT_SHORTCUTS, ...(parsed.shortcuts ?? {}) },
     };
+
+    // 一次性迁移：旧版本默认全屏键是 "F"（与系统/浏览器查找键冲突）；
+    // 升到 SCHEMA_VERSION 2 时统一把仍是 "F" 的迁到 Ctrl+Enter。
+    if ((parsed.version ?? 0) < SCHEMA_VERSION) {
+      if (merged.shortcuts.fullscreen === "F") {
+        merged.shortcuts.fullscreen = DEFAULT_SHORTCUTS.fullscreen;
+      }
+    }
+
+    return merged;
   } catch {
     return defaults;
   }
@@ -35,7 +46,10 @@ function load(): UiSettings {
 
 function persist(s: UiSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...s, version: SCHEMA_VERSION }),
+    );
   } catch {
     /* ignore quota */
   }
@@ -44,6 +58,7 @@ function persist(s: UiSettings): void {
 interface SettingsState extends UiSettings {
   settingsOpen: boolean;
   recordingAction: ShortcutAction | null;
+  gotoFrameOpen: boolean;
 
   setPlaylistCollapsed: (v: boolean) => void;
   togglePlaylist: () => void;
@@ -56,6 +71,9 @@ interface SettingsState extends UiSettings {
   resetShortcuts: () => void;
   beginRecording: (action: ShortcutAction) => void;
   cancelRecording: () => void;
+
+  openGotoFrame: () => void;
+  closeGotoFrame: () => void;
 }
 
 const initial = load();
@@ -64,6 +82,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   ...initial,
   settingsOpen: false,
   recordingAction: null,
+  gotoFrameOpen: false,
 
   setPlaylistCollapsed: (v) => {
     set({ playlistCollapsed: v });
@@ -102,4 +121,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   beginRecording: (action) => set({ recordingAction: action }),
   cancelRecording: () => set({ recordingAction: null }),
+
+  openGotoFrame: () => set({ gotoFrameOpen: true }),
+  closeGotoFrame: () => set({ gotoFrameOpen: false }),
 }));

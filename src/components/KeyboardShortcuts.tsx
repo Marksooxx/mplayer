@@ -8,7 +8,7 @@ import {
   seekRelative,
   setMutedProp,
   setVolumeProp,
-  setPaused,
+  togglePause,
 } from "../lib/mpv";
 import { playNext, playPrev } from "../hooks/useMpv";
 import { eventToCombo, type ShortcutAction } from "../lib/shortcuts";
@@ -48,7 +48,7 @@ function dispatch(
   const hasMedia = state.currentIndex >= 0;
   switch (action) {
     case "playPause":
-      if (hasMedia) void setPaused(state.isPlaying);
+      if (hasMedia) void togglePause();
       break;
     case "seekBack":
       if (hasMedia) void seekRelative(-5);
@@ -82,6 +82,9 @@ function dispatch(
       break;
     case "nextTrack":
       void playNext();
+      break;
+    case "gotoFrame":
+      useSettingsStore.getState().openGotoFrame();
       break;
   }
 }

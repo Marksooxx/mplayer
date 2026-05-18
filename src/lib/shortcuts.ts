@@ -12,6 +12,7 @@ export type ShortcutAction =
   | "seekForward"
   | "frameBack"
   | "frameForward"
+  | "gotoFrame"
   | "volumeUp"
   | "volumeDown"
   | "mute"
@@ -26,6 +27,7 @@ export const ACTION_ORDER: ShortcutAction[] = [
   "seekForward",
   "frameBack",
   "frameForward",
+  "gotoFrame",
   "volumeUp",
   "volumeDown",
   "mute",
@@ -41,6 +43,7 @@ export const ACTION_LABELS: Record<ShortcutAction, string> = {
   seekForward: "快进 5 秒",
   frameBack: "单帧后退",
   frameForward: "单帧前进",
+  gotoFrame: "跳转到指定帧",
   volumeUp: "音量 +5",
   volumeDown: "音量 -5",
   mute: "静音切换",
@@ -56,10 +59,11 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   seekForward: "ArrowRight",
   frameBack: "Ctrl+ArrowLeft",
   frameForward: "Ctrl+ArrowRight",
+  gotoFrame: "Ctrl+F",
   volumeUp: "ArrowUp",
   volumeDown: "ArrowDown",
   mute: "M",
-  fullscreen: "F",
+  fullscreen: "Ctrl+Enter",
   exitFullscreen: "Escape",
   prevTrack: "PageUp",
   nextTrack: "PageDown",

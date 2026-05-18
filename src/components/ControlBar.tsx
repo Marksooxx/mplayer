@@ -24,9 +24,9 @@ import {
   frameStep,
   seekAbsolute,
   setMutedProp,
-  setPaused,
   setSpeedProp,
   setVolumeProp,
+  togglePause,
 } from "../lib/mpv";
 import { playNext, playPrev } from "../hooks/useMpv";
 import { formatTime } from "../lib/format";
@@ -132,7 +132,7 @@ export function ControlBar() {
 
   const handlePlayPause = () => {
     if (currentIndex < 0) return;
-    void setPaused(isPlaying);
+    void togglePause();
   };
 
   const handleFullscreen = async () => {

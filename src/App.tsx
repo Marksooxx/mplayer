@@ -7,6 +7,7 @@ import { PlaylistPanel } from "./components/PlaylistPanel";
 import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { WaveformStrip } from "./components/WaveformStrip";
+import { GotoFrameDialog } from "./components/GotoFrameDialog";
 import { useMpv } from "./hooks/useMpv";
 import { useVideoMargins } from "./hooks/useVideoMargins";
 import { usePlayerStore } from "./store/playerStore";
@@ -132,6 +133,7 @@ function App() {
       </FullscreenAutoHide>
 
       <SettingsPanel />
+      <GotoFrameDialog />
     </div>
   );
 }

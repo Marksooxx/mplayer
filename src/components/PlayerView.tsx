@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Film, Loader2, Music4 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../store/playerStore";
-import { setPaused, setVolumeProp } from "../lib/mpv";
+import { setVolumeProp, togglePause } from "../lib/mpv";
 import { playIndex } from "../hooks/useMpv";
 
 const SINGLE_CLICK_DELAY = 250;
@@ -28,7 +28,7 @@ export function PlayerView() {
     }
     clickTimer.current = setTimeout(() => {
       clickTimer.current = null;
-      void setPaused(isPlaying);
+      void togglePause();
     }, SINGLE_CLICK_DELAY);
   };
 

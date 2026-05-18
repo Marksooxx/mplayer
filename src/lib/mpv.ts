@@ -13,6 +13,20 @@ export async function setPaused(paused: boolean): Promise<void> {
   await setProperty("pause", paused);
 }
 
+/**
+ * 切换播放/暂停 —— 从 mpv 真实状态读取，不依赖 React store 的 isPlaying。
+ * 修复"初始事件错过导致 isPlaying 一直 false"的 race。
+ */
+export async function togglePause(): Promise<void> {
+  try {
+    const paused = await getProperty("pause", "flag");
+    if (paused === null) return;
+    await setProperty("pause", !paused);
+  } catch (err) {
+    console.error("[mpv] togglePause failed", err);
+  }
+}
+
 export async function seekRelative(deltaSeconds: number): Promise<void> {
   await command("seek", [deltaSeconds, "relative"]);
 }
