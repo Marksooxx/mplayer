@@ -192,26 +192,29 @@ export function ControlBar() {
       className="flex flex-col gap-1 px-4 py-2 bg-neutral-950 border-t border-white/10 select-none"
       style={{ zIndex: 20, position: "relative" }}
     >
-      {/* Progress bar */}
+      {/* Progress bar — HeroUI Slider 视觉风格：轨道常驻、主色填充、圆点常驻 hover 放大 */}
       <div
         ref={progressRef}
-        className="relative h-2 group cursor-pointer"
+        className="relative h-5 group cursor-pointer flex items-center"
         onMouseDown={handleProgressDown}
         onMouseMove={handleProgressMouseMove}
         onMouseLeave={handleProgressMouseLeave}
       >
-        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 bg-white/15 rounded-full" />
+        {/* 背景轨道 */}
+        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-all duration-150" />
+        {/* 已播放填充 */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 left-0 h-1 bg-primary-500 rounded-full"
+          className="absolute top-1/2 -translate-y-1/2 left-0 h-1.5 group-hover:h-2 bg-primary-500 rounded-full transition-all duration-150"
           style={{ width: `${progress * 100}%` }}
         />
+        {/* 圆点 */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white opacity-0 group-hover:opacity-100 transition-opacity"
-          style={{ left: `${progress * 100}%` }}
+          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-3.5 group-hover:w-4 group-hover:h-4 rounded-full bg-white border-2 border-primary-500 shadow-md transition-all duration-150"
+          style={{ left: `${progress * 100}%`, opacity: hasMedia ? 1 : 0 }}
         />
         {hoverInfo && hasMedia && (
           <div
-            className="absolute -top-7 -translate-x-1/2 px-1.5 py-0.5 rounded text-[10px] bg-black/90 border border-white/10 text-white whitespace-nowrap pointer-events-none"
+            className="absolute -top-8 -translate-x-1/2 px-2 py-0.5 rounded text-xs tabular-nums bg-black/90 border border-white/15 text-white whitespace-nowrap pointer-events-none shadow-lg"
             style={{ left: hoverInfo.x }}
           >
             {formatTime(hoverInfo.time)}
@@ -246,17 +249,17 @@ export function ControlBar() {
             <VolumeIcon size={18} />
           </IconBtn>
           <div
-            className="relative w-24 h-2 cursor-pointer group"
+            className="relative w-24 h-5 flex items-center cursor-pointer group"
             onMouseDown={handleVolume}
             title={`音量 ${muted ? 0 : volume}`}
           >
-            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 bg-white/15 rounded-full" />
+            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-all duration-150" />
             <div
-              className="absolute top-1/2 -translate-y-1/2 left-0 h-1 bg-white/70 rounded-full"
+              className="absolute top-1/2 -translate-y-1/2 left-0 h-1.5 group-hover:h-2 bg-white/80 rounded-full transition-all duration-150"
               style={{ width: `${muted ? 0 : volume}%` }}
             />
             <div
-              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-white opacity-0 group-hover:opacity-100 transition-opacity"
+              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 group-hover:w-3.5 group-hover:h-3.5 rounded-full bg-white border-2 border-white/40 shadow transition-all duration-150"
               style={{ left: `${muted ? 0 : volume}%` }}
             />
           </div>
