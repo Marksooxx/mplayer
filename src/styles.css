@@ -8,9 +8,12 @@ body,
   padding: 0;
   height: 100vh;
   width: 100vw;
-  /* 与 index.html 的内联色一致：深色不透明 = 启动期无白闪
-     mpv 子窗口 z-order 在 webview 之上，视频区由 mpv 直接覆盖绘制 */
-  background: #0a0a0a;
+  /* ⚠️ 必须保持透明 —— mpv 子窗口在 Win32 z-order 中位于 WebView2 之下，
+     视频画面通过这里的"透明"区域显示。任何不透明背景都会把 mpv 整块挡住，
+     表现为视频区全黑（即使 mpv 在正常解码）。
+     冷启动期间的白闪靠 tauri.conf.json visible:false + React 首帧后 show() 防御，
+     不能靠这里的不透明色。*/
+  background: transparent !important;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
   color: rgb(229 231 235);

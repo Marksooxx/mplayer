@@ -520,6 +520,22 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 
 **修复**：手动跑 `node node_modules/tauri-plugin-libmpv-api/dist-js/cli.cjs setup-lib`。`start-dev.bat` / `start-dev.ps1` 检测到缺 DLL 时也是直接走这条路径。
 
+### 6.21 不透明 body 背景挡住 mpv 视频（视频区全黑）
+
+**现象**：升级版本后视频文件打开是黑色一片（不是 mpv 解码失败——位置 / 时长 / fps 都对，音频也响）。
+
+**根因**：为修冷启动白闪，我把 `styles.css` 和 `index.html` 的 `body` 背景从 `transparent` 改成 `#0a0a0a`。但是 **mpv 子窗口在 Win32 z-order 中位于 WebView2 之下**（之前以为"创建顺序晚 → 在上"，实际相反或者跟 plugin 行为有关——总之经验证 mpv 在 webview 之下）。视频通过 webview body 的 `transparent` 区域**透出**给用户看。一旦 body 染色不透明，整个视频区被 webview 自己的不透明颜色盖死，mpv 还在正常解码但全被挡住。
+
+**修复**：
+- `styles.css` body `background: transparent !important`（用 `!important` 防止以后再被覆盖）
+- `index.html` 内联 `<style>` 同样 `background: transparent`
+- 冷启动白闪改靠 `tauri.conf.json visible:false` + React 首帧 `requestAnimationFrame×2` 后 `getCurrentWindow().show()` 防御。Rust setup 里 1.5s 兜底（详见 §6.20）
+- 空闲态 / 加载态 / audio-only 期间没有 mpv 视频可以透出，由 `PlayerView` 自己的不透明深色 overlay (`bg-neutral-950`) 来兜底盖住透明的视频区
+
+**经验教训**：libmpv 的 wid 嵌入路径绝对不能容忍 webview body 不透明。这条铁律值得在 styles.css 里加大注释提醒。先前以为只有"audio 文件没视频"这种边缘场景会暴露问题，但实际**任何视频文件**都会因这个 bug 而黑屏；只是早期版本测试集中在音频上才没发现。
+
+---
+
 ### 6.20 Tauri 2 capability 静默拒绝 IPC 导致窗口永不显示
 
 **现象**：装好版本后双击启动，进程在 Task Manager 里能看到 `mplayer.exe` 在跑，但屏幕上**没有任何窗口出现**——既不是崩溃也没有报错。

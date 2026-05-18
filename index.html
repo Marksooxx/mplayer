@@ -5,17 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>mplayer</title>
     <!--
-      内联背景色：在 styles.css 加载前先把 html/body 染深，
-      避免冷启动期间的白底闪烁。Tauri 窗口 visible:false 会等 React
-      首次 commit 后才 show()，此时 body 已是深色，无白闪。
+      ⚠️ 这里**不要**给 html/body 染色 —— mpv 在 Win32 z-order 中位于
+      WebView2 之下，视频通过 body 的"透明"显示出来。任何不透明背景
+      都会让视频区全黑。
+      冷启动白底闪烁靠 tauri.conf.json `visible:false` + React 首帧后
+      `getCurrentWindow().show()` 防御（详见 App.tsx）。
     -->
     <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        background: #0a0a0a;
-        color: #e5e7eb;
-      }
+      html, body { margin: 0; padding: 0; background: transparent; color: #e5e7eb; }
     </style>
   </head>
   <body>
