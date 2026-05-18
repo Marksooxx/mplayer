@@ -8,6 +8,8 @@ import {
   Maximize,
   Minimize,
   Pause,
+  Pin,
+  PinOff,
   Play,
   Settings,
   SkipBack,
@@ -92,8 +94,12 @@ export function ControlBar() {
   const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
   const togglePlaylist = useSettingsStore((s) => s.togglePlaylist);
   const openSettings = useSettingsStore((s) => s.openSettings);
+  const alwaysOnTop = useSettingsStore((s) => s.alwaysOnTop);
+  const toggleAlwaysOnTop = useSettingsStore((s) => s.toggleAlwaysOnTop);
 
-  const [dragValue, setDragValue] = useState<number | null>(null);
+  // dragValue 提升到 store，让 WaveformStrip 能跟随拖动实时移动光标
+  const dragValue = usePlayerStore((s) => s.dragPosition);
+  const setDragValue = usePlayerStore((s) => s.setDragPosition);
   const [hoverInfo, setHoverInfo] = useState<{ x: number; time: number } | null>(null);
   const [speedOpen, setSpeedOpen] = useState(false);
   const [draggingVolume, setDraggingVolume] = useState<number | null>(null);
@@ -174,7 +180,8 @@ export function ControlBar() {
       const nt = seekFromMouse(ev.clientX);
       const final = nt ?? t;
       void seekAbsolute(final);
-      setDragValue(null);
+      // 略等 mpv time-pos 回报新位置再清掉乐观值，避免视觉上回弹一下
+      setTimeout(() => setDragValue(null), 200);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -365,6 +372,13 @@ export function ControlBar() {
           active={!playlistCollapsed}
         >
           <ListMusic size={18} />
+        </IconBtn>
+        <IconBtn
+          onClick={toggleAlwaysOnTop}
+          label={alwaysOnTop ? "取消窗口置顶 (Ctrl+T)" : "窗口置顶 (Ctrl+T)"}
+          active={alwaysOnTop}
+        >
+          {alwaysOnTop ? <Pin size={18} /> : <PinOff size={18} />}
         </IconBtn>
         <IconBtn onClick={openSettings} label="设置">
           <Settings size={18} />

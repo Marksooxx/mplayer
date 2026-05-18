@@ -53,6 +53,9 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
   const fileLoaded = usePlayerStore((s) => s.fileLoaded);
   const position = usePlayerStore((s) => s.position);
   const duration = usePlayerStore((s) => s.duration);
+  // 用户正在拖动进度条时，光标立即跟随目标位置；松手后清空，回归 mpv 真实进度。
+  const dragPosition = usePlayerStore((s) => s.dragPosition);
+  const displayPosition = dragPosition ?? position;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
@@ -145,11 +148,11 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
     const dur = duration > 0 ? duration : peakDuration;
     if (dur <= 0) return;
     try {
-      ws.setTime(Math.max(0, Math.min(position, dur)));
+      ws.setTime(Math.max(0, Math.min(displayPosition, dur)));
     } catch {
       /* swallow setTime errors when media not ready */
     }
-  }, [position, duration, peakDuration]);
+  }, [displayPosition, duration, peakDuration]);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
@@ -164,7 +167,7 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
   if (!item) return null;
 
   const dur = duration > 0 ? duration : peakDuration;
-  const progress = dur > 0 ? Math.min(1, position / dur) : 0;
+  const progress = dur > 0 ? Math.min(1, displayPosition / dur) : 0;
 
   return (
     <div

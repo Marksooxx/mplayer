@@ -20,6 +20,7 @@ export type ShortcutAction =
   | "mute"
   | "fullscreen"
   | "exitFullscreen"
+  | "alwaysOnTop"
   | "prevTrack"
   | "nextTrack";
 
@@ -37,6 +38,7 @@ export const ACTION_ORDER: ShortcutAction[] = [
   "mute",
   "fullscreen",
   "exitFullscreen",
+  "alwaysOnTop",
   "prevTrack",
   "nextTrack",
 ];
@@ -55,6 +57,7 @@ export const ACTION_LABELS: Record<ShortcutAction, string> = {
   mute: "静音切换",
   fullscreen: "切换全屏",
   exitFullscreen: "退出全屏",
+  alwaysOnTop: "窗口置顶切换",
   prevTrack: "上一个视频",
   nextTrack: "下一个视频",
 };
@@ -73,6 +76,7 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   mute: "M",
   fullscreen: "Ctrl+Enter",
   exitFullscreen: "Escape",
+  alwaysOnTop: "Ctrl+T",
   prevTrack: "PageUp",
   nextTrack: "PageDown",
 };

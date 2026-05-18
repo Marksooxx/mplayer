@@ -17,6 +17,7 @@ export interface UiSettings {
   showWaveform: boolean; // 底部波形条显隐
   rememberPosition: boolean; // 记忆每个文件上次播放位置
   frameStepMultiplier: number; // Shift+←/→ 多帧步进的帧数
+  alwaysOnTop: boolean; // 窗口置顶
   shortcuts: Record<ShortcutAction, string>;
 }
 
@@ -27,6 +28,7 @@ const defaults: UiSettings = {
   showWaveform: true,
   rememberPosition: true,
   frameStepMultiplier: FRAME_STEP_DEFAULT,
+  alwaysOnTop: false,
   shortcuts: { ...DEFAULT_SHORTCUTS },
 };
 
@@ -69,6 +71,8 @@ interface SettingsState extends UiSettings {
   setShowWaveform: (v: boolean) => void;
   setRememberPosition: (v: boolean) => void;
   setFrameStepMultiplier: (v: number) => void;
+  setAlwaysOnTop: (v: boolean) => void;
+  toggleAlwaysOnTop: () => void;
   openSettings: () => void;
   closeSettings: () => void;
 
@@ -96,6 +100,7 @@ function stripUi(s: SettingsState): UiSettings {
     showWaveform: s.showWaveform,
     rememberPosition: s.rememberPosition,
     frameStepMultiplier: s.frameStepMultiplier,
+    alwaysOnTop: s.alwaysOnTop,
     shortcuts: s.shortcuts,
   };
 }
@@ -136,6 +141,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const clamped = clampMultiplier(v);
     set({ frameStepMultiplier: clamped });
     persistIfBootstrapped(get, { frameStepMultiplier: clamped });
+  },
+  setAlwaysOnTop: (v) => {
+    set({ alwaysOnTop: v });
+    persistIfBootstrapped(get, { alwaysOnTop: v });
+  },
+  toggleAlwaysOnTop: () => {
+    const v = !get().alwaysOnTop;
+    set({ alwaysOnTop: v });
+    persistIfBootstrapped(get, { alwaysOnTop: v });
   },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false, recordingAction: null }),

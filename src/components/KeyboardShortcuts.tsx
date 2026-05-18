@@ -108,6 +108,9 @@ function dispatch(
     case "gotoFrame":
       useSettingsStore.getState().openGotoFrame();
       break;
+    case "alwaysOnTop":
+      useSettingsStore.getState().toggleAlwaysOnTop();
+      break;
   }
 }
 

@@ -39,6 +39,7 @@ interface PlayerState {
   mpvReady: boolean;
   fileLoaded: boolean; // 当 mpv 真正加载了视频帧（file-loaded 事件）才置 true
   dragHover: boolean; // 文件正在被拖入窗口（drag enter/over），用于显示放置区提示
+  dragPosition: number | null; // 进度条正在被拖动时的目标位置（秒）；松手后清空
   videoWidth: number;  // 0 表示无视频流（纯音频）
   videoHeight: number;
   fps: number;         // container-fps，无视频流时为 0
@@ -70,6 +71,7 @@ interface PlayerState {
   setMpvReady: (v: boolean) => void;
   setFileLoaded: (v: boolean) => void;
   setDragHover: (v: boolean) => void;
+  setDragPosition: (v: number | null) => void;
   setVideoSize: (w: number, h: number) => void;
   setFps: (v: number) => void;
   setError: (msg: string | null) => void;
@@ -104,6 +106,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   mpvReady: false,
   fileLoaded: false,
   dragHover: false,
+  dragPosition: null,
   videoWidth: 0,
   videoHeight: 0,
   fps: 0,
@@ -166,6 +169,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   setMpvReady: (v) => set({ mpvReady: v }),
   setFileLoaded: (v) => set({ fileLoaded: v }),
   setDragHover: (v) => set({ dragHover: v }),
+  setDragPosition: (v) => set({ dragPosition: v }),
   setVideoSize: (w, h) => set({ videoWidth: w, videoHeight: h }),
   setFps: (v) => set({ fps: v }),
   setError: (msg) => set({ errorMsg: msg }),
