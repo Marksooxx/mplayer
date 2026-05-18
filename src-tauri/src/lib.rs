@@ -1,3 +1,5 @@
+mod peaks;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -5,6 +7,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_libmpv::init())
         .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![peaks::calculate_peaks])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

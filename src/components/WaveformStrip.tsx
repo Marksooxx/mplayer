@@ -1,43 +1,53 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { readFile } from "@tauri-apps/plugin-fs";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import WaveSurfer from "wavesurfer.js";
 import { usePlayerStore } from "../store/playerStore";
 import { seekAbsolute } from "../lib/mpv";
 
-const MIME_MAP: Record<string, string> = {
-  mp3: "audio/mpeg",
-  wav: "audio/wav",
-  flac: "audio/flac",
-  ogg: "audio/ogg",
-  m4a: "audio/mp4",
-  aac: "audio/aac",
-  opus: "audio/ogg",
-  wma: "audio/x-ms-wma",
-  mp4: "audio/mp4",
-  mkv: "video/x-matroska",
-  webm: "video/webm",
-  mov: "video/quicktime",
-  avi: "video/x-msvideo",
-  flv: "video/x-flv",
-  m4v: "video/mp4",
-  wmv: "video/x-ms-wmv",
-  ts: "video/mp2t",
-  mpg: "video/mpeg",
-  mpeg: "video/mpeg",
-};
+interface PeaksData {
+  peaks: number[];
+  duration: number;
+  sampleRate: number;
+  channels: number;
+}
 
-function mimeFor(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return MIME_MAP[ext] ?? "application/octet-stream";
+// 简易 LRU peaks 缓存 (key = filePath::samplesPerPixel)
+const peaksCache = new Map<string, PeaksData>();
+const MAX_CACHE = 20;
+
+async function getPeaks(filePath: string, samplesPerPixel: number): Promise<PeaksData> {
+  const key = `${filePath}::${samplesPerPixel}`;
+  const cached = peaksCache.get(key);
+  if (cached) {
+    // LRU 触发：先删后插，保持插入顺序就是访问顺序
+    peaksCache.delete(key);
+    peaksCache.set(key, cached);
+    return cached;
+  }
+  const data = await invoke<PeaksData>("calculate_peaks", {
+    filePath,
+    samplesPerPixel,
+  });
+  if (peaksCache.size >= MAX_CACHE) {
+    const firstKey = peaksCache.keys().next().value;
+    if (firstKey !== undefined) peaksCache.delete(firstKey);
+  }
+  peaksCache.set(key, data);
+  return data;
 }
 
 interface Props {
   height?: number;
+  samplesPerPixel?: number;
 }
 
-/** 波形条：所有文件类型都显示在 ControlBar 上方，进度跟随 mpv，点击 seek。 */
-export function WaveformStrip({ height = 60 }: Props) {
+/**
+ * 底部常驻波形条
+ * 走 Rust symphonia 离线解码生成 peaks，避免浏览器 Web Audio 解码失败 / 大文件 OOM。
+ * mpv 仍是真实音频源；wavesurfer 仅做可视化 + click seek。
+ */
+export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
   const playlist = usePlayerStore((s) => s.playlist);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
   const fileLoaded = usePlayerStore((s) => s.fileLoaded);
@@ -46,35 +56,27 @@ export function WaveformStrip({ height = 60 }: Props) {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
-  const objectUrlRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [peakDuration, setPeakDuration] = useState(0);
 
   const item = currentIndex >= 0 ? playlist[currentIndex] : null;
   const path = item?.path;
 
-  // 加载/重建 WaveSurfer
   useEffect(() => {
     let cancelled = false;
-    setFailed(false);
+    setFailed(null);
 
     const cleanup = () => {
       if (wsRef.current) {
         try { wsRef.current.destroy(); } catch { /* ignore */ }
         wsRef.current = null;
       }
-      if (audioElRef.current) {
-        audioElRef.current = null;
-      }
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = null;
-      }
     };
 
     if (!path || !containerRef.current) {
       cleanup();
+      setPeakDuration(0);
       return;
     }
 
@@ -82,64 +84,50 @@ export function WaveformStrip({ height = 60 }: Props) {
 
     (async () => {
       try {
-        const bytes = await readFile(path);
+        const data = await getPeaks(path, samplesPerPixel);
         if (cancelled) return;
+        setPeakDuration(data.duration);
 
-        // 销毁旧实例
         cleanup();
-
-        const blob = new Blob([bytes as BlobPart], { type: mimeFor(path) });
-        const url = URL.createObjectURL(blob);
-        objectUrlRef.current = url;
-
-        // muted 音频元素：让 wavesurfer 有 media 但不出声（mpv 才是真正播放器）
-        const audio = document.createElement("audio");
-        audio.muted = true;
-        audio.preload = "metadata";
-        audioElRef.current = audio;
-
         if (!containerRef.current) return;
 
         const ws = WaveSurfer.create({
           container: containerRef.current,
           waveColor: "rgba(255, 255, 255, 0.35)",
           progressColor: "#6366f1",
-          cursorColor: "rgba(255, 255, 255, 0.7)",
-          cursorWidth: 1,
+          cursorColor: "rgba(255, 255, 255, 0.85)",
+          cursorWidth: 2,
           height,
           barWidth: 2,
           barGap: 1,
           barRadius: 2,
           normalize: true,
-          interact: false, // 我们自己处理点击 seek
-          media: audio,
+          interact: false, // 我们自己监听 click → mpv seek
+          // 用 Tauri asset 协议给 media 元素，便于 ws 内部用 setTime 推进进度。
+          // 即使 media 解码失败（mkv 等），peaks 已经预渲染，不影响视觉。
+          url: convertFileSrc(path),
+          peaks: [data.peaks],
+          duration: data.duration,
         });
         wsRef.current = ws;
 
-        ws.on("ready", () => {
-          if (cancelled) return;
-          setLoading(false);
-          // 渲染完后同步当前进度
-          const pos = usePlayerStore.getState().position;
-          if (pos > 0) {
-            try { ws.setTime(pos); } catch { /* ignore */ }
-          }
-        });
-
         ws.on("error", (err) => {
-          console.error("[wavesurfer] error", err);
-          if (!cancelled) {
-            setLoading(false);
-            setFailed(true);
-          }
+          console.warn("[wavesurfer] media error (non-fatal, peaks already rendered)", err);
         });
 
-        await ws.load(url);
+        if (cancelled) {
+          ws.destroy();
+          wsRef.current = null;
+          return;
+        }
+
+        setLoading(false);
       } catch (err) {
-        console.error("[waveform] load failed", err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[waveform] peaks calc failed", err);
         if (!cancelled) {
           setLoading(false);
-          setFailed(true);
+          setFailed(msg);
         }
       }
     })();
@@ -148,50 +136,66 @@ export function WaveformStrip({ height = 60 }: Props) {
       cancelled = true;
       cleanup();
     };
-  }, [path, height]);
+  }, [path, height, samplesPerPixel]);
 
-  // 同步 mpv 进度到 wavesurfer 光标
+  // 同步 mpv 进度到 wavesurfer 光标 + 进度填色
   useEffect(() => {
     const ws = wsRef.current;
-    if (!ws || !fileLoaded || duration <= 0) return;
+    if (!ws) return;
+    const dur = duration > 0 ? duration : peakDuration;
+    if (dur <= 0) return;
     try {
-      ws.setTime(Math.min(position, duration));
+      ws.setTime(Math.max(0, Math.min(position, dur)));
     } catch {
-      /* ws may not be ready */
+      /* swallow setTime errors when media not ready */
     }
-  }, [position, duration, fileLoaded]);
+  }, [position, duration, peakDuration]);
 
-  // 点击 seek
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!containerRef.current || duration <= 0) return;
+    if (!containerRef.current) return;
+    const dur = duration > 0 ? duration : peakDuration;
+    if (dur <= 0) return;
     const rect = containerRef.current.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const target = ratio * duration;
+    const target = ratio * dur;
     void seekAbsolute(target);
   };
 
   if (!item) return null;
 
+  const dur = duration > 0 ? duration : peakDuration;
+  const progress = dur > 0 ? Math.min(1, position / dur) : 0;
+
   return (
     <div
-      className="relative w-full bg-neutral-950 border-t border-white/5 px-2"
+      className="relative w-full bg-neutral-950 border-t border-white/5 px-2 select-none"
       style={{ height }}
     >
       <div
         ref={containerRef}
         className="absolute inset-0 cursor-pointer"
         onClick={handleClick}
-        title="点击跳转"
+        title="点击跳转到该位置"
       />
+      {/* 兜底光标：即使 wavesurfer 的 media 元素无法解码（mkv 等），这条光标也会跟着 mpv 移动 */}
+      {!loading && !failed && fileLoaded && (
+        <div
+          className="absolute top-0 bottom-0 w-0.5 bg-primary-300/90 pointer-events-none shadow-[0_0_4px_rgba(99,102,241,0.6)]"
+          style={{ left: `calc(${progress * 100}% + 8px)` }}
+        />
+      )}
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center gap-2 text-white/50 text-xs bg-neutral-950/80 pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center gap-2 text-white/50 text-xs bg-neutral-950 pointer-events-none">
           <Loader2 size={14} className="animate-spin" />
-          波形解码中...
+          波形解码中（Rust symphonia）...
         </div>
       )}
       {failed && (
-        <div className="absolute inset-0 flex items-center justify-center text-white/40 text-xs pointer-events-none">
-          波形不可用
+        <div
+          className="absolute inset-0 flex items-center justify-center text-white/40 text-xs pointer-events-none px-3"
+          title={failed}
+        >
+          波形不可用（{failed.slice(0, 80)}）
         </div>
       )}
     </div>
