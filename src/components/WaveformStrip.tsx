@@ -168,21 +168,24 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
 
   return (
     <div
-      className="relative w-full bg-neutral-950 border-t border-white/5 px-2 select-none"
+      className="relative w-full bg-neutral-950 border-t border-white/5 select-none"
       style={{ height }}
     >
+      {/* 使用 inset-x-4 与 ControlBar 的 px-4 内边距对齐，保证波形宽度与下方进度条一致 */}
       <div
         ref={containerRef}
-        className="absolute inset-0 cursor-pointer"
+        className="absolute inset-x-4 inset-y-0 cursor-pointer"
         onClick={handleClick}
         title="点击跳转到该位置"
       />
-      {/* 兜底光标：即使 wavesurfer 的 media 元素无法解码（mkv 等），这条光标也会跟着 mpv 移动 */}
+      {/* 与 containerRef 同一区域的光标层：left:% 直接相对该区域，无需 + padding 偏移 */}
       {!loading && !failed && fileLoaded && (
-        <div
-          className="absolute top-0 bottom-0 w-0.5 bg-primary-300/90 pointer-events-none shadow-[0_0_4px_rgba(99,102,241,0.6)]"
-          style={{ left: `calc(${progress * 100}% + 8px)` }}
-        />
+        <div className="absolute inset-x-4 inset-y-0 pointer-events-none">
+          <div
+            className="absolute top-0 bottom-0 w-0.5 bg-primary-300/90 -translate-x-1/2 shadow-[0_0_4px_rgba(99,102,241,0.6)]"
+            style={{ left: `${progress * 100}%` }}
+          />
+        </div>
       )}
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center gap-2 text-white/50 text-xs bg-neutral-950 pointer-events-none">
