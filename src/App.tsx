@@ -5,9 +5,11 @@ import { PlayerView } from "./components/PlayerView";
 import { ControlBar } from "./components/ControlBar";
 import { PlaylistPanel } from "./components/PlaylistPanel";
 import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { useMpv } from "./hooks/useMpv";
 import { useVideoMargins } from "./hooks/useVideoMargins";
 import { usePlayerStore } from "./store/playerStore";
+import { useSettingsStore } from "./store/settingsStore";
 
 function FullscreenAutoHide({ children }: { children: React.ReactNode }) {
   const fullscreen = usePlayerStore((s) => s.fullscreen);
@@ -78,13 +80,13 @@ function ErrorToast() {
 function App() {
   useMpv();
 
-  const topRef = useRef<HTMLDivElement>(null);
   const sideRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
+  const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
 
-  useVideoMargins(topRef, sideRef, bottomRef);
+  useVideoMargins(sideRef, bottomRef);
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -103,21 +105,16 @@ function App() {
   }, [setFullscreen]);
 
   return (
-    <div className="w-screen h-screen flex flex-col" style={{ background: "transparent" }}>
+    <div className="w-screen h-screen flex flex-col overflow-hidden" style={{ background: "transparent" }}>
       <KeyboardShortcuts />
-
-      <FullscreenAutoHide>
-        <div ref={topRef} style={{ display: fullscreen ? "none" : "block" }}>
-          <TopBar />
-        </div>
-      </FullscreenAutoHide>
 
       <div className="flex-1 flex min-h-0 relative">
         <main className="flex-1 relative min-w-0" style={{ background: "transparent" }}>
           <PlayerView />
           <ErrorToast />
+          <TopBar />
         </main>
-        {!fullscreen && (
+        {!fullscreen && !playlistCollapsed && (
           <div ref={sideRef}>
             <PlaylistPanel />
           </div>
@@ -129,6 +126,8 @@ function App() {
           <ControlBar />
         </div>
       </FullscreenAutoHide>
+
+      <SettingsPanel />
     </div>
   );
 }

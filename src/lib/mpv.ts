@@ -9,10 +9,6 @@ export async function loadFile(path: string): Promise<void> {
   await command("loadfile", [path, "replace"]);
 }
 
-export async function togglePause(currentlyPaused: boolean): Promise<void> {
-  await setProperty("pause", !currentlyPaused);
-}
-
 export async function setPaused(paused: boolean): Promise<void> {
   await setProperty("pause", paused);
 }

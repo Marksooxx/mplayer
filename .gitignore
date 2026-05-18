@@ -36,3 +36,7 @@ src-tauri/lib/*.so
 
 # OS
 Thumbs.db
+
+# Local test notes
+测试报告.md
+*.local.md

@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../store/playerStore";
 import {
-  togglePause,
+  setPaused,
   setVolumeProp,
 } from "../lib/mpv";
 import { playIndex } from "../hooks/useMpv";
@@ -28,7 +28,7 @@ export function PlayerView() {
     }
     clickTimer.current = setTimeout(() => {
       clickTimer.current = null;
-      void togglePause(isPlaying);
+      void setPaused(isPlaying); // 当前在播 → 暂停；当前暂停 → 取消暂停
     }, SINGLE_CLICK_DELAY);
   };
 

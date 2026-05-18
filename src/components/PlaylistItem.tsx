@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ArrowUpToLine, FolderOpen, Play, Trash2 } from "lucide-react";
 import { MarqueeText } from "./MarqueeText";
 import { usePlayerStore, type PlaylistItem as PlaylistItemType } from "../store/playerStore";
 import { playIndex } from "../hooks/useMpv";
@@ -69,11 +70,11 @@ export function PlaylistItem({ item, index }: Props) {
       >
         <div className="flex items-center gap-2 min-w-0">
           <span
-            className={`shrink-0 w-4 text-center text-xs ${
+            className={`shrink-0 w-5 flex items-center justify-center text-xs ${
               isCurrent ? "text-primary-300" : "text-white/40"
             }`}
           >
-            {isCurrent ? "▶" : index + 1}
+            {isCurrent ? <Play size={12} fill="currentColor" /> : index + 1}
           </span>
           <div className="flex-1 min-w-0 text-sm text-white/90">
             <MarqueeText text={item.name} />
@@ -85,12 +86,18 @@ export function PlaylistItem({ item, index }: Props) {
         <>
           <div className="fixed inset-0 z-50" onClick={closeMenu} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }} />
           <div
-            className="fixed z-50 min-w-[180px] py-1 rounded-md border border-white/10 bg-neutral-900/95 backdrop-blur-md shadow-xl text-sm text-white/90"
+            className="fixed z-50 min-w-[180px] py-1 rounded-md border border-white/10 bg-neutral-900 shadow-xl text-sm text-white/90"
             style={{ left: menu.x, top: menu.y }}
           >
-            <button className="w-full px-3 py-1.5 text-left hover:bg-white/10" onClick={handleMoveTop}>移到顶部</button>
-            <button className="w-full px-3 py-1.5 text-left hover:bg-white/10" onClick={openInFolder}>在文件夹中显示</button>
-            <button className="w-full px-3 py-1.5 text-left hover:bg-red-500/30 text-red-300" onClick={handleRemove}>从列表移除</button>
+            <button className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2" onClick={handleMoveTop}>
+              <ArrowUpToLine size={14} /> 移到顶部
+            </button>
+            <button className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2" onClick={openInFolder}>
+              <FolderOpen size={14} /> 在文件夹中显示
+            </button>
+            <button className="w-full px-3 py-1.5 text-left hover:bg-red-500/30 text-red-300 flex items-center gap-2" onClick={handleRemove}>
+              <Trash2 size={14} /> 从列表移除
+            </button>
           </div>
         </>
       )}

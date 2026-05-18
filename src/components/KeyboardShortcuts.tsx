@@ -7,17 +7,19 @@ import {
   seekRelative,
   setMutedProp,
   setVolumeProp,
-  togglePause,
+  setPaused,
 } from "../lib/mpv";
 
-function shouldIgnore(target: EventTarget | null): boolean {
+function shouldIgnore(e: KeyboardEvent): boolean {
+  const target = e.target;
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
-  return (
-    tag === "INPUT" ||
-    tag === "TEXTAREA" ||
-    target.isContentEditable
-  );
+  if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return true;
+  // Buttons handle Space/Enter themselves via react-aria; avoid double-toggling
+  if (e.key === " " || e.key === "Enter") {
+    if (tag === "BUTTON" || target.getAttribute("role") === "button") return true;
+  }
+  return false;
 }
 
 export function KeyboardShortcuts() {
@@ -25,7 +27,7 @@ export function KeyboardShortcuts() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (shouldIgnore(e.target)) return;
+      if (shouldIgnore(e)) return;
 
       const state = usePlayerStore.getState();
       const hasMedia = state.currentIndex >= 0;
@@ -33,7 +35,7 @@ export function KeyboardShortcuts() {
       switch (e.key) {
         case " ": {
           e.preventDefault();
-          if (hasMedia) void togglePause(state.isPlaying);
+          if (hasMedia) void setPaused(state.isPlaying); // playing → pause
           break;
         }
         case "ArrowLeft": {
