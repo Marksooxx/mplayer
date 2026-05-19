@@ -297,6 +297,23 @@ pnpm tauri build
 - 仅在 Windows 10/11 完整测试。`tauri-plugin-libmpv` 的 Linux / macOS 嵌入式渲染仍处实验阶段。
 - 首次 `pnpm tauri dev` 编译 Rust 依赖耗时较长。
 - 拖动进度条期间不会暂停播放（mpv `seek` 已做关键帧优化，体感不抖）。
+- **资源管理器多选 ≥ 16 个文件按 Enter 没反应**：Windows Shell 对传统 desktop 应用触发"默认动词"有数量上限（注册表 `MultipleInvokePromptMinimum`，默认 15）；VLC / MPC-HC / PotPlayer 同样受此限制。
+  - **快速绕开**：直接把文件拖入 mplayer 窗口（`onDragDropEvent`，无数量限制）。
+  - **永久修复**：根目录运行 `raise-explorer-multi-limit.ps1`，把阈值提到 100。
+    ```powershell
+    .\raise-explorer-multi-limit.ps1            # 提到 100，询问后重启 Explorer
+    .\raise-explorer-multi-limit.ps1 -Value 200 # 自定义
+    .\raise-explorer-multi-limit.ps1 -Reset     # 恢复默认 15
+    ```
+
+---
+
+## TODO
+
+- **实现 `IDropTarget` / `IExecuteCommand` COM 接口**，从根上消除"多选 16+ 没反应"限制——让 Shell 一次性把整批文件作为 `IDataObject` 传给 mplayer，而不是逐个 spawn exe。约 ~260 行 Rust（`windows` crate）+ NSIS / MSI 注册脚本 + LocalServer32 启动分支。参考 Notepad++ / Sublime / VS Code 的 DropHandler 实现。**优先级低**：野外没有视频播放器这么做，工程量换长期体验，等使用频率上来再做。
+- Linux / macOS 嵌入式渲染验证。
+- WaveformStrip 超长视频（>2h）peaks 解码 Web Worker 化。
+- 自动恢复上次播放列表（开关 + 自动写盘）。
 
 ---
 
