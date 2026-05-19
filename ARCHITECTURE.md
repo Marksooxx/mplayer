@@ -271,8 +271,11 @@ WaveformStrip useEffect(path 变化)
         │       interact: false,            // 我们自己处理点击 seek
         │     })
         │
-        └──► useEffect(position 变化) → ws.setTime(position)
-            另有一个独立的"光标 div"叠在波形上，即使 wavesurfer media 解码失败也能跟着 mpv 走
+        └──► useVirtualPlayhead((displayed) => ws.setTime(displayed))
+            rAF 驱动（144Hz），与 ProgressFill / ProgressThumb 同源同帧。旧实现走
+            React useEffect ← position state，受 mpv time-pos 30Hz 上限制约，肉眼能
+            感受到帧率低。另有一个独立的"光标 div" (WaveformCursor) 也接同一个
+            playhead，即使 wavesurfer media 解码失败也能跟着 mpv 走。详见 §6.22
 ```
 
 ---
@@ -407,9 +410,11 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 
 **根因**：原实现用 `ResizeObserver` 监听 sideRef 尺寸：DOM 渲染 → 测量 → IPC 一连串异步，30-80ms 间隔里 mpv 还在用旧的 `right=0` margin 渲染，盖住了新出现的 playlist 区域。
 
-**修复**：`useVideoMargins` 从 store 直接读 `playlistCollapsed / showWaveform / fullscreen`，**用硬编码尺寸常量算 margin**（PLAYLIST=280, CONTROL=60, WAVEFORM=56），状态变化 → effect 立刻发 IPC，与 React commit 同一拍。再加一个 80ms 的 mount 延迟保险：collapsed→展开时先等 mpv 让出区域，再 mount PlaylistPanel。
+**修复**：`useVideoMargins` 从 store 直接读 `playlistCollapsed / showWaveform / fullscreen / playlistWidth`，**用尺寸常量 + 用户拖动设置算 margin**（CONTROL=60, WAVEFORM=56；PLAYLIST 跟随 settings.playlistWidth），状态变化 → effect 立刻发 IPC，与 React commit 同一拍。
 
 > 这是典型的"web 风格异步渲染 vs 桌面同步状态"的不匹配。`ResizeObserver` 适合"被动响应 DOM 变化"，不适合"主动同步 OS 子窗口尺寸"。
+
+> **后续演进（见 §6.23）**：早期版本还配了 80ms `renderPlaylist` 延迟（让 mpv 先让出空间再 mount PlaylistPanel）解决"mpv 短暂盖文字"。后来发现这个延迟反而引入了"DOM 缺席瞬态"漏光问题。最终方案是 PlaylistPanel 始终挂载 + `transform: translateX` 滑入滑出，从根上消除 mount/unmount 间隙；同时 mpv 加 `background-color=#000000` 兜底，"mpv 盖文字"的可能性也被压到零。**80ms 延迟已废弃。**
 
 ### 6.7 React Strict Mode 关掉后 HMR 安全
 
@@ -551,12 +556,96 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 
 ---
 
+### 6.22 Cursor"瞬移 + 退回"的双重根因 —— 模块级单例 + 显式 snap 模式
+
+**现象时间线（4 轮迭代）**：
+1. v1：暂停瞬间 cursor 向前"跳一小段"（最初报告）
+2. v2（CSS transition 100ms 平滑）：跳改成"软跳"但仍可见
+3. v3（rAF + dt 外推 + pause 冻结 `lastExtrapolated`）：跳消失，但播放中 cursor 周期性抖动；暂停后仍偶尔向前
+4. v4（虚拟播放头 + PAUSE_FREEZE 280ms + SEEK_THRESHOLD_PAUSED=5ms 自动 snap）：向前跳没了，但**改成向后退一点**——用户原话"暂停时光标往后小退一点点"
+
+**根因 A：hook 局部状态被父组件重渲染重置**
+
+`useCursorAnimation` 最初把 `displayed / lastTickTime` 等放在 `useEffect` 局部变量，依赖数组 `[ref, updater]`。父组件 `ControlBar` 在 mpv 每 ~33ms 一次的 `time-pos` 事件下重渲染，子组件 `ProgressFill / ProgressThumb` 也跟着重渲染 → 传入的 inline `updater` 引用变 → `useEffect` cleanup + 重 setup → 局部 `displayed` 重置为 `s.position`。每秒被重置 30 次，dt 累加完全丢失连续性。表现就是播放中持续微抖、暂停瞬间瞬移。
+
+**修复 A**：把 rAF 状态提到**模块级单例**（`useCursorAnimation.ts` 顶部）。整个 app 共享一个 tick，订阅者通过 `useVirtualPlayhead(callback)` 注册回调；父组件重渲染不影响模块级 `displayed`。`useCursorAnimation(ref, updater)` 成为 `useVirtualPlayhead` 的薄包装。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor）+ `WaveSurfer.setTime` 都接到同一个 tick，绝对同步。
+
+**根因 B：mpv 暂停时 `position` 不能可靠反映"用户视觉真实位置"**
+
+暂停瞬间 mpv 内部状态会有几十毫秒**多方向浮动**：
+- 先发出最后几次 `time-pos`（buffered frames），值比真实位置**略前**
+- 然后回退一帧到"暂停显示的上一帧"位置，值比真实位置**略后**
+
+任何"自动 snap 到 mpv `position`"的逻辑都会跟着这种浮动抖动。修复 A 的 `SEEK_THRESHOLD_PAUSED=5ms` 自动 snap 就吃了 root cause B 的亏——把 cursor 拽回 mpv 报的"略后位置"。
+
+**修复 B**：暂停时**完全不自动 snap**。只在用户主动操作（`seek*` / `frameStep*` / `loadFile`）时由调用方显式调 `forcePlayheadSnap()` 触发一次性 snap。`mpv.ts` 内所有这些函数前都加了这一行：
+
+```ts
+export async function seekAbsolute(seconds: number) {
+  forcePlayheadSnap();
+  await command("seek", [seconds, "absolute"]);
+}
+```
+
+`forcePlayheadSnap()` 同时立即解除 PAUSE_FREEZE 280ms 冻结窗，确保用户暂停后立刻按 Ctrl+→ 单帧步进有视觉反馈。代价：暂停时 cursor 跟 mpv 实际位置可能有几十毫秒偏差，但稳定不动（肉眼几乎不可见）。
+
+**经验教训**：
+- 高频外部事件（mpv property change 30Hz）+ 子组件 inline 函数 → 隐式高频 `useEffect` cleanup/restart。任何"用 useEffect 持有 rAF 局部状态"的模式都会被这种重渲染节奏摧毁。**模块级单例 + Hook 内只挂订阅** 是最稳的桥接。
+- **不要相信外部状态机（mpv / OS / hardware）在状态转换边界上的瞬时值**。"暂停发生时 mpv 报的 position"不等于"用户视觉上停在哪一帧"，两者可能差几帧。边界上的事件值会多方向浮动，跟着浮动 = 跟着抖。
+- "自动检测 seek + 自动 snap"的阈值永远是 trade-off。退路是**让调用方告诉播放头何时需要 snap**（forcePlayheadSnap 模式），完全消除被动猜测。
+
+### 6.23 PlaylistPanel 切换"白色漏光" —— DOM 缺席瞬态 + 透明窗穿透到桌面
+
+**现象**：折叠/展开 PlaylistPanel 的瞬间，右侧 280px 区域闪一下"白色漏光"——能看到桌面或底层应用（深色主题用户看起来则是"灰光"或当前桌面壁纸）。
+
+**几轮错误的方向（值得记录避免再走）**：
+1. **猜：WebView2 默认背景白色**。加 `<meta name="color-scheme" content="dark">`。冷启动闪改善了一些，运行时切换还是漏。
+2. **猜：mpv margin IPC 还没生效就 mount 了组件**。加 80ms `renderPlaylist` 延迟、加 250ms `guard` 黑底占位。改善但仍偶发（mpv IPC 实际生效时间不稳定）。
+3. **猜：mpv vo 配置问题，让 mpv 自己填黑色**。设 `background=#000000`——但这跟旧 `force-window=immediate` 组合让 init 死锁（详见 §6.4）。
+
+**真正根因**（社区调研 + 多方文档交叉验证）：
+
+Tauri `transparent: true` 让窗口本身透明 —— 透明区域不是"WebView2 默认背景"，而是真的**穿透到桌面合成**。`color-scheme: dark` 只影响 WebView2 内部的内容色（input border / scrollbar），**不影响透明窗的穿透**。
+
+PlaylistPanel `mount/unmount` 与 `setVideoMarginRatio` IPC 异步之间有 80-200ms 的"**DOM 缺席瞬态**"：那 280px 区域既没有不透明 DOM 占位、mpv 又因 margin 已让出不在那绘制 → 直接穿透到桌面 → 用户桌面 / IDE / 浏览器是什么色就显示什么色。
+
+**根治方案（双重保险，从两端封堵）**：
+
+1. **应用层（消除 DOM 缺席瞬态）**：PlaylistPanel 改为**始终挂载** + `position: absolute right-0` + `transform: translateX(width)` 把自己滑到屏外。DOM 永远占住右侧 `playlistWidth` 不透明黑底位置，mpv margin 切换无论快慢都不会露底。`transform` 是 compositor-only 属性，零 layout/paint，纯 GPU 合成动画。同时给 panel 加 `contain: layout paint` 隔离样式变化对外层的影响。
+2. **mpv 层（即使 DOM 缺席也兜底）**：mpv init 选项加 `background-color=#000000` + `background=color`（mpv 0.40+ 语义），让 `video-margin-ratio` 让出的区域用纯黑帧填充而不是透明。即使 panel 滑动中 mpv 还没及时扩展 margin，露出的也是黑色不是桌面。
+
+注意 `background=color` 是 mpv 0.40 引入的**新含义**（如何处理 alpha 帧），跟老版本的 `--background` 是颜色值不同。zhongfly 的 windows build 是 mpv 0.40+ 没问题。如果哪天换更老版本，要改成 `--background=#000000`。
+
+**经验教训**：
+- **Tauri 透明窗的"透明"是真的穿透到桌面合成**，不是 WebView2 内部默认色。一切"漏光"类问题都要先问"这块区域有没有 (不透明 DOM 占位 OR mpv 在这绘制不透明帧)"——任何一个都行但**必须有一个**，否则一定漏。
+- **补漏（延迟、guard、color-scheme）治标不治本**。消除"DOM 缺席瞬态"+ mpv 端填黑兜底才是根治。
+- mpv 在透明窗下的最佳配置是 `background-color=#000000 + background=color` 强制填黑，而不是依赖默认行为。
+- **WebView2 `WEBVIEW2_DEFAULT_BACKGROUND_COLOR` 环境变量**（社区调研里查到的另一个工具）能在 controller 创建前锁定底层背景色，但仅支持 alpha=0 全透或 alpha=FF 全不透；对透明窗（要 mpv 透出来）只能设 `00000000`，对运行时漏光帮助不大。我们没用这个。
+
+### 6.24 mpv `force-window=yes` + `background-color=#000000` 在 wid embed 模式可行
+
+**现象延伸**：§6.4 记录过 `force-window=immediate + background=#000000` 让 init 死锁。这次重新引入 mpv 背景填色的需求时，担心会复现。
+
+**实测结论**：
+- `force-window=immediate`（立即出窗口，无视频时也维持）+ `background=#000000`：**死锁**
+- 不设 `force-window`（默认 `auto`）+ `background-color=#000000` + `background=color`：**OK**，init 正常
+- `force-window=yes`（有内容才出窗口）+ 上述背景选项：**OK**
+
+mpv 0.40 把选项重命名了：旧 `--background` → `--background-color`（颜色值），新 `--background` 现在表示"如何处理带 alpha 的帧"（`color` / `tiles` / `none`），两个独立。旧名字配新值会直接报错或解析错误。
+
+**经验教训**：mpv 初始化选项是"地雷区"——看起来无害的两个选项组合可能死锁/挂起，且没有任何错误日志。新加 mpv 选项的规范流程：**release build 测一遍 init 能否完成 + 视频能否播 + 切换文件能否切**，缺一不可。
+
+---
+
 ## 7. 性能 / UX 考量
 
 ### 7.1 渲染管线
 - **mpv 渲染走 native GPU**，前端 webview 几乎只负责 UI 控件，CPU/GPU 占用极低
-- **滑块 fill 用 `transform: scaleX`**：GPU 合成层，60Hz 拖动不触发 layout/paint
-- **滑块 thumb 用 `left:%` + `translate(-50%, -50%)`**：单元素 layout 成本可忽略；与 fill 的 scale 错峰（transform 百分比相对自身，不能用来在父容器内移动）
+- **滑块 fill 用 `transform: scaleX`**：GPU 合成层，144Hz 拖动不触发 layout/paint
+- **滑块 thumb 用 `left:%` + `translate(-50%, -50%)`**：单元素 layout 成本可忽略；与 fill 的 scale 错峰（transform 百分比相对自身，不能用来在父容器内移动，详见 §6.8）
+- **虚拟播放头单例**（`useCursorAnimation.ts`）：rAF 状态（`displayed / lastTickTime / pauseFreezeUntil` 等）放在**模块级**，全局只一个 tick。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor / wavesurfer.setTime）通过 `useVirtualPlayhead(cb)` 订阅同一帧，绝对同步。父组件高频重渲染不会重启 rAF / 重置 `displayed`（旧实现把状态放 useEffect 局部 + 依赖 updater 会被父渲染节奏摧毁，详见 §6.22）
+- **进度条父容器加 `contain: layout paint`**：隔离 thumb 的 `left:%` layout pass，不波及外层 ControlBar 其他元素
+- **PlaylistPanel `contain: layout paint` + `will-change: transform`**：滑入滑出动画跑在合成器层，跟 cursor 高频 DOM 写入互不干扰
 
 ### 7.2 IPC 节流
 - **拖动音量条 rAF 合并**：60+Hz mousemove 合并为每帧最多一次 `setVolumeProp` IPC
@@ -564,9 +653,10 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 - **乐观更新 + 200ms 延迟撤销**：拖动期间 `displayVolume = draggingVolume ?? volume` 优先用本地值，松手 200ms 后再清；避免 mpv property-change echo 引发回弹
 
 ### 7.3 mpv 嵌入相关
-- **状态驱动 video-margin-ratio**：从 `playlistCollapsed / showWaveform / fullscreen` 直接算 margin，不用 ResizeObserver；常量 `PLAYLIST=280 / CONTROL=60 / WAVEFORM=56`
-- **PlaylistPanel 打开延迟 80ms**：留时间给 mpv 应用 margin IPC，避免 mpv 子窗口短暂覆盖刚 mount 的 playlist
-- **未 fullscreen 时 video-margin-ratio = `{ right: 280/w, bottom: (60+56)/h }`**（关闭波形条则 `bottom: 60/h`）：mpv 完全不在 UI 区域渲染，节省 GPU 也保证 UI 不被覆盖
+- **状态驱动 video-margin-ratio**：从 `playlistCollapsed / showWaveform / fullscreen` 直接算 margin，不用 ResizeObserver；常量 `CONTROL=60 / WAVEFORM=56`，`PLAYLIST` 跟随 `settings.playlistWidth`（200–600 用户可拖动）
+- **PlaylistPanel 始终挂载 + `transform: translateX` 滑入滑出**：放弃了早期的"延迟 80ms mount"和"过渡 guard 占位"两条补漏路径，根治方案是消除"DOM 缺席瞬态"本身。`position: absolute right-0 top-0 bottom-0` 脱离 flex 布局，`transform: translateX(0)` 显示、`translateX(width)` 滑出屏外；transition 220ms cubic-bezier，纯合成器动画；resizing 时关 transition 避免拖宽度卡顿。详见 §6.23
+- **mpv 启动选项 `background-color=#000000 + background=color`**：让 video-margin-ratio 让出的区域用纯黑帧填充而不是透明。即使 PlaylistPanel 滑动过程 mpv margin 还没及时同步，露出区域也是黑色不是桌面。这是 §6.23 漏光修复的双重保险之一
+- **未 fullscreen 时 video-margin-ratio = `{ right: playlistWidth/w, bottom: (60+56)/h }`**（关闭波形条则 `bottom: 60/h`；playlist 折叠时 `right: 0`）：mpv 完全不在 UI 区域渲染，节省 GPU 也保证 UI 不被覆盖
 
 ### 7.4 波形管线
 - **Rust symphonia 离线解码 peaks**：流式解码不爆内存，几乎所有 codec；返回 `Vec<f32>` 几 KB 量级
@@ -576,11 +666,12 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 - **独立 cursor div 叠在波形上**：即便 wavesurfer `<audio>` media 无法解码（mkv/dts 等），cursor 也跟着 mpv `time-pos` 走
 
 ### 7.5 启动期 UX
-- **冷启动无白底闪烁** —— 四层保险：
+- **冷启动无白底闪烁** —— 多层保险（注意：body **不能**染色，必须 `transparent`，否则 mpv 视频被遮死，见 §6.21）：
   1. `tauri.conf.json` `visible: false`，OS 窗口先不显示
-  2. `index.html` 内联 `<style>` 把 html/body 染 `#0a0a0a`，比 Vite 注入的 CSS 更早
-  3. `styles.css` body 改为不透明深色（mpv 子窗口在 webview 之上，安全）
-  4. App.tsx 首挂载后双 rAF `window.show()`；并由 Rust 1.5s 兜底无条件 show()，UI 永不卡死
+  2. `index.html` 静态 `<div id="boot-bg">` 黑底占位（`position:fixed; inset:0; z-index:9999; background:#0a0a0a`），浏览器 parse HTML 阶段就在 DOM 里——比 Vite/React 加载早。`<meta name="color-scheme" content="dark">` 让 WebView2 内部默认色变深，吸收任何 WebView2 自身的瞬态露白
+  3. `styles.css` html/body `background: transparent !important`（带警告注释，防止以后被人改回）
+  4. `App.tsx` 首挂载后双 `requestAnimationFrame`：第一帧后 `window.show()` 让窗口可见（用户看到 boot-bg 黑底），第二帧后 `document.getElementById("boot-bg")?.remove()` 撤掉占位（露出 PlayerView idle overlay 同色黑底）。整个过渡视觉上是黑→黑→黑，零白闪
+  5. Rust setup 起独立线程 1.5s 后无条件 `window.show()` 兜底——即使前端阻塞，用户看到的也是 boot-bg 黑色，不会是透明窗穿透到桌面
 - **PlaylistPanel slide-in / SettingsPanel & GotoFrameDialog fade+scale / ErrorToast slide-down**：每个生灭都过 ~150ms 缓动，消除"突然冒出来"的硬切感
 - **拖文件入窗口的 DragHoverOverlay**：onDragDropEvent enter/over/leave 全套监听，全屏虚线框 + Download 图标 + 提示文案，比传统 web 拖拽 UX 强很多
 - **GotoFrameDialog 双模式自适应**：有 fps → 帧号；无 fps（纯音频）→ mm:ss / hh:mm:ss 时间输入
@@ -615,7 +706,8 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 | 关心什么 | 看哪个文件 |
 |---|---|
 | mpv 怎么 init / 怎么收 event | `src/hooks/useMpv.ts` |
-| mpv 命令封装 | `src/lib/mpv.ts` |
+| mpv 命令封装（带 `forcePlayheadSnap`） | `src/lib/mpv.ts` |
+| 虚拟播放头单例（cursor rAF） | `src/hooks/useCursorAnimation.ts` |
 | 全局快捷键派发 | `src/components/KeyboardShortcuts.tsx` |
 | 快捷键定义 / 默认值 / 工具 | `src/lib/shortcuts.ts` |
 | 设置面板 + 录键 UI | `src/components/SettingsPanel.tsx` |
@@ -623,6 +715,8 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 | 波形条 | `src/components/WaveformStrip.tsx` |
 | 波形 Rust 端解码 | `src-tauri/src/peaks.rs` |
 | mpv 视频区裁切 | `src/hooks/useVideoMargins.ts` |
+| PlaylistPanel transform 滑入滑出 | `src/components/PlaylistPanel.tsx` |
+| 冷启动黑底占位 | `index.html` (`#boot-bg`) |
 | 启动入口 | `start-dev.ps1` / `start-dev.bat` |
 | DLL 复制逻辑 | `src-tauri/build.rs` |
 | 权限配置 | `src-tauri/capabilities/default.json` |
