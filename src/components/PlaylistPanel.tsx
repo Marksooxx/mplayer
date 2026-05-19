@@ -39,6 +39,7 @@ export function PlaylistPanel() {
   // - 在 INPUT/TEXTAREA 内不处理(编辑文本时按 Delete 应删字符)
   // - selectedIndex < 0 (无选中) 也不处理
   // - 不依赖 settings.shortcuts 配置,这是 playlist 上下文相关固定键
+  // - 删的是当前正在播放的 item → 先 stop mpv(否则 mpv 继续解码已删除的文件)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Delete") return;
@@ -52,6 +53,10 @@ export function PlaylistPanel() {
       const item = s.playlist[s.selectedIndex];
       if (item) {
         e.preventDefault();
+        const isCurrent = s.currentIndex === s.selectedIndex;
+        if (isCurrent) {
+          void stopPlayback();
+        }
         s.removeFromPlaylist(item.id);
       }
     };

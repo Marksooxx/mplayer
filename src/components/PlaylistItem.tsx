@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { ArrowUpToLine, FolderOpen, Play, Trash2 } from "lucide-react";
 import { MarqueeText } from "./MarqueeText";
 import { usePlayerStore, type PlaylistItem as PlaylistItemType } from "../store/playerStore";
 import { playIndex } from "../hooks/useMpv";
+import { stopPlayback } from "../lib/mpv";
 import { parentDir } from "../lib/format";
 
 interface Props {
@@ -45,6 +47,10 @@ export function PlaylistItem({ item, index }: Props) {
   };
 
   const handleRemove = () => {
+    // 删的是当前正在播放的 item → 先 stop mpv,避免它继续解码已被列表移除的文件
+    if (isCurrent) {
+      void stopPlayback();
+    }
     removeFromPlaylist(item.id);
     closeMenu();
   };
@@ -82,24 +88,44 @@ export function PlaylistItem({ item, index }: Props) {
         </div>
         <div className="pl-6 text-[10px] text-white/30 truncate">{parentDir(item.path)}</div>
       </div>
-      {menu && (
+      {/* Portal 到 document.body —— PlaylistPanel 有 transform: translateX,
+          fixed 后代会以 panel 为 containing block 而不是 viewport。Portal 把
+          menu 渲染到 body 外面跳出这个影响,fixed 才能真正相对 viewport 定位。 */}
+      {menu && createPortal(
         <>
-          <div className="fixed inset-0 z-50" onClick={closeMenu} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }} />
           <div
-            className="fixed z-50 min-w-[180px] py-1 rounded-md border border-white/10 bg-neutral-900 shadow-xl text-sm text-white/90"
+            className="fixed inset-0 z-[120]"
+            onClick={closeMenu}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              closeMenu();
+            }}
+          />
+          <div
+            className="fixed z-[121] min-w-[180px] py-1 rounded-md border border-white/10 bg-neutral-900 shadow-xl text-sm text-white/90"
             style={{ left: menu.x, top: menu.y }}
           >
-            <button className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2" onClick={handleMoveTop}>
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+              onClick={handleMoveTop}
+            >
               <ArrowUpToLine size={14} /> 移到顶部
             </button>
-            <button className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2" onClick={openInFolder}>
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+              onClick={openInFolder}
+            >
               <FolderOpen size={14} /> 在文件夹中显示
             </button>
-            <button className="w-full px-3 py-1.5 text-left hover:bg-red-500/30 text-red-300 flex items-center gap-2" onClick={handleRemove}>
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-red-500/30 text-red-300 flex items-center gap-2"
+              onClick={handleRemove}
+            >
               <Trash2 size={14} /> 从列表移除
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </>
   );
