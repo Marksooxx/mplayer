@@ -14,9 +14,21 @@ const WAVEFORM_HEIGHT = 56;
  *
  * 状态驱动（不依赖 DOM 测量）：playlistCollapsed / playlistWidth / showWaveform /
  * fullscreen 任一变化都立刻同步算出 margin 发到 mpv，无可见延迟。
+ *
+ * ★ mpvReady 依赖（修首启视频右移）★
+ *
+ * mpv 异步初始化时，本 hook 的 effect 会先跑一次——此时 mpv 还没 ready，
+ * setVideoMarginRatio IPC 调用被 catch 吞掉，margin 没设上去。mpv 之后
+ * ready 但 effect 依赖未变化 → 不会 retry → mpv 一直在全宽渲染，PlaylistPanel
+ * 不透明黑底盖住视频右 280px → 视觉上"视频整体右移、playlist 覆盖在上面"。
+ * 用户手动折叠/展开 playlist 后 playlistCollapsed 变化才触发 effect，margin
+ * 这才生效。
+ *
+ * 加 mpvReady 到依赖数组，ready 状态从 false → true 时强制重跑 apply。
  */
 export function useVideoMargins(): void {
   const fullscreen = usePlayerStore((s) => s.fullscreen);
+  const mpvReady = usePlayerStore((s) => s.mpvReady);
   const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
   const showWaveform = useSettingsStore((s) => s.showWaveform);
   const playlistWidth = useSettingsStore((s) => s.playlistWidth);
@@ -36,11 +48,11 @@ export function useVideoMargins(): void {
         left: 0,
       };
       void setVideoMarginRatio(ratio).catch(() => {
-        /* mpv may not be ready yet */
+        /* mpv may not be ready yet — 等 mpvReady 变化时会重跑 */
       });
     };
     apply();
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
-  }, [fullscreen, playlistCollapsed, showWaveform, playlistWidth]);
+  }, [fullscreen, mpvReady, playlistCollapsed, showWaveform, playlistWidth]);
 }

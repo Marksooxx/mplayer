@@ -139,12 +139,22 @@ function App() {
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
   const showWaveform = useSettingsStore((s) => s.showWaveform);
+  const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
+  const playlistWidth = useSettingsStore((s) => s.playlistWidth);
 
-  // 注：PlaylistPanel 改为"始终挂载 + transform translateX 滑入滑出"模式（详见
-  // PlaylistPanel.tsx）。DOM 永久存在右侧 playlistWidth 不透明黑底区域，消除
-  // 了 mount/unmount 与 mpv margin IPC 异步之间的"DOM 缺席瞬态"，从根上避免
-  // Tauri 透明窗口穿透到桌面（漏光）。所以不再需要任何 renderPlaylist 延迟
-  // / guard 占位逻辑。collapsed 状态由 PlaylistPanel 自己从 settingsStore 读。
+  // 注：PlaylistPanel 是"absolute right-0 + transform translateX 滑入滑出",
+  // 不占 flex 布局空间(详见 PlaylistPanel.tsx)。为了让 main 区域不蔓延到
+  // playlist 应有的位置(导致 TopBar 横跨整窗 + PlayerView 视频区被压在
+  // panel 后面),用一个 flex spacer 占据 playlist 的物理空间——main flex-1
+  // 自动缩到视频区宽度。
+  //
+  // spacer 自身透明(没有任何不透明 DOM):
+  //   - !collapsed: width = playlistWidth, panel transform: translateX(0) 在 spacer 上
+  //   - collapsed: width = 0, panel transform: translateX(width) 滑出屏外, main 扩展全宽
+  // spacer width transition 跟 panel transform transition 同步(同 220ms + 同
+  // easing),保证 main / panel / mpv-margin 三者视觉同步收缩/扩展。
+  // 漏光防御:mpv 的 background-color=#000000 + background=color 在 margin
+  // 区域填黑色,即使 spacer 透明,mpv 自己负责非视频区填充——不会穿透到桌面。
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -172,6 +182,18 @@ function App() {
           <ErrorToast />
           <TopBar />
         </main>
+        {/* spacer：占据 PlaylistPanel 应有的 flex 空间，让 main 收缩到视频区。
+            width 跟随 playlistCollapsed，跟 PlaylistPanel transform 同步 transition。 */}
+        {!fullscreen && (
+          <div
+            aria-hidden
+            className="shrink-0"
+            style={{
+              width: playlistCollapsed ? 0 : playlistWidth,
+              transition: "width 220ms cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          />
+        )}
         {/* PlaylistPanel 自带 absolute 定位 + transform 控制可见，不占 flex 布局 */}
         {!fullscreen && <PlaylistPanel />}
       </div>
