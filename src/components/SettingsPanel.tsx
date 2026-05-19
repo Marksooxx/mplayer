@@ -24,6 +24,9 @@ function Toggle({
   label: string;
   description?: string;
 }) {
+  // 开关视觉:开 = primary 实心 + 白色 thumb + 微发光环;关 = 深灰底 + 暗灰 thumb。
+  // 旧实现 w-10 h-5 + bg-white/20 关态在深色面板上几乎无对比;放大到 w-12 h-6 +
+  // ring 区分 + thumb 颜色差异化,远距离一眼看清状态。
   return (
     <label className="flex items-start justify-between gap-3 p-3 rounded-md hover:bg-white/5 cursor-pointer">
       <div className="flex-1">
@@ -35,13 +38,18 @@ function Toggle({
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative shrink-0 w-10 h-5 rounded-full transition-colors ${
-          checked ? "bg-primary-500" : "bg-white/20"
+        className={`relative shrink-0 w-12 h-6 rounded-full transition-colors ring-1 ring-inset ${
+          checked
+            ? "bg-primary-500 ring-primary-300/70 shadow-[0_0_0_3px_rgba(99,102,241,0.18)]"
+            : "bg-neutral-800 ring-white/20"
         }`}
+        aria-label={checked ? "已开启" : "已关闭"}
       >
         <span
-          className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-            checked ? "translate-x-5" : ""
+          className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-all shadow-md ${
+            checked
+              ? "translate-x-6 bg-white"
+              : "translate-x-0 bg-neutral-400"
           }`}
         />
       </button>

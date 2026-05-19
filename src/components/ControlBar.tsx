@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  AudioWaveform,
   ChevronFirst,
   ChevronLast,
   Gauge,
@@ -136,6 +137,8 @@ export function ControlBar() {
   const toggleAlwaysOnTop = useSettingsStore((s) => s.toggleAlwaysOnTop);
   const playbackMode = useSettingsStore((s) => s.playbackMode);
   const cyclePlaybackMode = useSettingsStore((s) => s.cyclePlaybackMode);
+  const showWaveform = useSettingsStore((s) => s.showWaveform);
+  const setShowWaveform = useSettingsStore((s) => s.setShowWaveform);
 
   // dragValue 提升到 store，让 WaveformStrip 能跟随拖动实时移动光标
   const dragValue = usePlayerStore((s) => s.dragPosition);
@@ -398,6 +401,13 @@ export function ControlBar() {
 
         <div className="w-px h-6 bg-white/10 mx-1" />
 
+        <IconBtn
+          onClick={() => setShowWaveform(!showWaveform)}
+          label={showWaveform ? "隐藏底部波形条" : "显示底部波形条"}
+          active={showWaveform}
+        >
+          <AudioWaveform size={18} />
+        </IconBtn>
         <IconBtn
           onClick={togglePlaylist}
           label={playlistCollapsed ? "显示播放列表" : "隐藏播放列表"}

@@ -33,7 +33,18 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let paths = collect_path_args(args);
             if !paths.is_empty() {
+                // emit 给前端(如已挂 listener 立即收到);同时 append 到 LaunchArgs
+                // state 兜底。Windows 多选 N 个回车时,Shell 会启动 N 次 .exe,
+                // 第一个进程作为主实例还在初始化 React/listener,后续 N-1 个进程
+                // 立即调本 handler emit 事件——主实例 listener 还没挂上,事件全
+                // 丢失。把 paths 一并 append 到 LaunchArgs,前端 invoke
+                // get_launch_args 时取走,与 listen 路径配合 Set 去重消除重复。
                 let _ = app.emit("open-files", &paths);
+                if let Some(s) = app.try_state::<LaunchArgs>() {
+                    if let Ok(mut g) = s.0.lock() {
+                        g.extend(paths.iter().cloned());
+                    }
+                }
             }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();

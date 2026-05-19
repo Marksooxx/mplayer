@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { FolderOpen, ListMusic, Save } from "lucide-react";
+import { FolderOpen, Save, Trash2 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { usePlayerStore } from "../store/playerStore";
@@ -11,6 +11,7 @@ import {
 import { PlaylistItem } from "./PlaylistItem";
 import { exportToM3U8, parseM3U } from "../lib/playlist-io";
 import { playIndex } from "../hooks/useMpv";
+import { stopPlayback } from "../lib/mpv";
 
 const PLAYLIST_FILTERS = [{ name: "M3U 播放列表", extensions: ["m3u8", "m3u"] }];
 
@@ -106,6 +107,16 @@ export function PlaylistPanel() {
     }
   };
 
+  const handleClear = async () => {
+    if (playlist.length === 0) return;
+    try {
+      await stopPlayback();
+    } catch {
+      /* ignore — 仍要清空列表 */
+    }
+    setPlaylist([]);
+  };
+
   return (
     <aside
       className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-white/10 bg-neutral-950"
@@ -138,10 +149,13 @@ export function PlaylistPanel() {
         }`}
         style={{ marginLeft: -2 }} /* 让点击区域跨过左边框，更好命中 */
       />
-      <div className="flex items-center gap-1 px-3 py-2.5 border-b border-white/10">
-        <ListMusic size={16} className="text-white/70" />
-        <span className="flex-1 text-sm font-medium text-white/90">播放列表</span>
-        <span className="text-xs text-white/40 mr-1">{playlist.length}</span>
+      {/* 标题栏简化:去掉"播放列表"长文字(用户已知所在区域),只保留紧凑的
+          数量提示 + 三个操作按钮。280px panel 下不再挤,且数字不再跟保存
+          图标视觉粘连。详见 image #12 用户反馈。 */}
+      <div className="flex items-center gap-0.5 px-2 py-2 border-b border-white/10">
+        <span className="flex-1 text-xs text-white/50 tabular-nums pl-1.5 select-none">
+          {playlist.length === 0 ? "空列表" : `${playlist.length} 项`}
+        </span>
         <button
           type="button"
           onClick={handleLoad}
@@ -158,6 +172,15 @@ export function PlaylistPanel() {
           className="w-7 h-7 inline-flex items-center justify-center rounded text-white/55 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
         >
           <Save size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={handleClear}
+          disabled={playlist.length === 0}
+          title="清空播放列表"
+          className="w-7 h-7 inline-flex items-center justify-center rounded text-white/55 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-white/55"
+        >
+          <Trash2 size={14} />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">

@@ -115,7 +115,28 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   fps: 0,
   errorMsg: null,
 
-  setPlaylist: (items) => set({ playlist: items }),
+  setPlaylist: (items) =>
+    set((s) => ({
+      playlist: items,
+      // 同步修复 currentIndex/selectedIndex,避免"列表清空但 currentIndex 还指旧位置"
+      // 让 PlayerView 误以为还有 current item
+      currentIndex:
+        items.length === 0 ? -1 : Math.min(s.currentIndex, items.length - 1),
+      selectedIndex:
+        items.length === 0 ? -1 : Math.min(s.selectedIndex, items.length - 1),
+      // 列表清空时也清掉播放状态,避免 ControlBar 显示残留的 duration/position
+      ...(items.length === 0
+        ? {
+            position: 0,
+            duration: 0,
+            fileLoaded: false,
+            videoWidth: 0,
+            videoHeight: 0,
+            fps: 0,
+            isPlaying: false,
+          }
+        : {}),
+    })),
   appendToPlaylist: (paths) => {
     const newItems = paths.map((p) => ({ id: nextId(), path: p, name: basename(p) }));
     let result: PlaylistItem[] = [];
