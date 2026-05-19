@@ -110,6 +110,14 @@ async function ensureInit(): Promise<void> {
       osc: "no",
       "input-default-bindings": "no",
       "input-vo-keyboard": "no",
+      // ★ 漏光防御 ★
+      // Tauri transparent:true + WebView2 透明区域会穿透到桌面。video-margin-ratio
+      // 让出的右侧/底部区域如果 mpv 不绘制 → 漏光。
+      // mpv 0.40+: --background-color 控制非视频区填充色,--background=color 强制
+      // 用此色填充而不是透明。两者一起 → mpv 在 margin 区域永远输出纯黑帧 →
+      // 不透明 → 不漏光。
+      "background-color": "#000000",
+      background: "color",
       volume: settings.volume,
       mute: settings.muted ? "yes" : "no",
       speed: settings.speed,

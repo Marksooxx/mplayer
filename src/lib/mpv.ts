@@ -4,8 +4,10 @@ import {
   getProperty,
 } from "tauri-plugin-libmpv-api";
 import type { TrackInfo } from "../store/playerStore";
+import { forcePlayheadSnap } from "../hooks/useCursorAnimation";
 
 export async function loadFile(path: string): Promise<void> {
+  forcePlayheadSnap();
   await command("loadfile", [path, "replace"]);
 }
 
@@ -28,18 +30,22 @@ export async function togglePause(): Promise<void> {
 }
 
 export async function seekRelative(deltaSeconds: number): Promise<void> {
+  forcePlayheadSnap();
   await command("seek", [deltaSeconds, "relative"]);
 }
 
 export async function seekAbsolute(seconds: number): Promise<void> {
+  forcePlayheadSnap();
   await command("seek", [seconds, "absolute"]);
 }
 
 export async function frameStep(): Promise<void> {
+  forcePlayheadSnap();
   await command("frame-step");
 }
 
 export async function frameBackStep(): Promise<void> {
+  forcePlayheadSnap();
   await command("frame-back-step");
 }
 
@@ -50,6 +56,7 @@ export async function frameBackStep(): Promise<void> {
  */
 export async function frameStepBy(count: number): Promise<void> {
   if (count === 0) return;
+  forcePlayheadSnap();
   try {
     let fps: number | null = null;
     try {

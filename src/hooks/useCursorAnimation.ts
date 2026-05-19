@@ -16,16 +16,25 @@ import { usePlayerStore } from "../store/playerStore";
  * 单例模式:整个 app 只有一个 rAF tick 推进 displayed,无论多少 cursor
  * 订阅,所有订阅者绝对同步。父组件重渲染不会触动模块级状态。
  *
- * ★ 暂停瞬移修复 ★
+ * ★ 暂停"瞬移/退回"双向问题 ★
  *
- * 从 playing → pausing 转换的瞬间,mpv 还会发出最后几次 time-pos 事件
- * (buffered frames + IPC 延迟),它们的值比 dt 累加的 displayed 略前。
- * 这些事件如果触发 snap,cursor 会向前"跳"几十毫秒。
+ * 之前观察:
+ *   - playing→pausing 瞬间,mpv 可能发出最后几次 time-pos(buffered),
+ *     这些值比 dt 累加的 displayed 略前 → cursor 向前"跳" (第一次报告)
+ *   - 加 PAUSE_FREEZE_MS 冻结窗 + 暂停时 SEEK_THRESHOLD_PAUSED=5ms 自动
+ *     snap → 冻结窗结束后,mpv 内部回退到上一帧(暂停显示前一帧),
+ *     displayed = dt 累加值 > mpv 报的 position → snap 让 cursor 退回
+ *     (第二次报告)
  *
- * 方案:暂停转换瞬间启动 PAUSE_FREEZE_MS 冻结窗,期间忽略所有 mpv
- * position 更新。窗口结束后:
- *   - 播放时 diff > 300ms 才认为是用户主动 seek
- *   - 暂停时 diff > 5ms 即 snap(让 Ctrl+←/→ 单帧步进 ~33ms 有视觉反馈)
+ * 根因:暂停时 mpv 的 position 不能可靠地反映"用户视觉上的真实位置",
+ * 它会因 mpv 内部状态有几十 ms 的浮动。任何"自动 snap"都会让 cursor
+ * 跟着这种浮动抖动。
+ *
+ * 终极方案:**暂停时完全不自动 snap**,只在用户主动操作(seek/单帧
+ * 步进/loadFile)时,由调用方显式 forcePlayheadSnap() 触发一次性 snap。
+ * 这样暂停时 cursor 永远稳定不动(代价:跟 mpv 实际位置可能有几十 ms
+ * 偏差,肉眼不可见)。播放时仍维持 SEEK_THRESHOLD_PLAYING=300ms 自动
+ * snap 兜底真实 seek 检测。
  */
 type PlayheadCb = (displayed: number, progress: number) => void;
 
@@ -37,9 +46,9 @@ let lastTickTime = 0;
 let lastSeenPosition = -Infinity;
 let wasPlaying = false;
 let pauseFreezeUntil = 0;
+let forceNextSnap = false; // 用户主动操作触发一次性 snap
 
-const SEEK_THRESHOLD_PLAYING = 0.3; // 播放时 >300ms 才认为是 seek
-const SEEK_THRESHOLD_PAUSED = 0.005; // 暂停时 >5ms 即 snap(单帧 ~33ms 触发)
+const SEEK_THRESHOLD_PLAYING = 0.3; // 播放时 >300ms 才认为是 seek(兜底)
 const PAUSE_FREEZE_MS = 280; // playing → pausing 冻结窗(吸收 mpv 最后几次 time-pos)
 
 function tick(): void {
@@ -71,11 +80,21 @@ function tick(): void {
 
     if (!inPauseFreeze && s.position !== lastSeenPosition) {
       const diff = s.position - displayed;
-      const threshold = s.isPlaying ? SEEK_THRESHOLD_PLAYING : SEEK_THRESHOLD_PAUSED;
-      if (Math.abs(diff) > threshold) {
+      // snap 触发条件:
+      //   1. 用户主动操作刚刚调过 forcePlayheadSnap() → 必 snap
+      //   2. 播放中且 mpv position 突变 > 300ms → 真实 seek 兜底
+      //   暂停时不再"自动 snap",彻底消除 mpv 内部状态浮动导致的退回
+      const shouldSnap =
+        forceNextSnap ||
+        (s.isPlaying && Math.abs(diff) > SEEK_THRESHOLD_PLAYING);
+      if (shouldSnap) {
         displayed = s.position;
       }
+      forceNextSnap = false;
       lastSeenPosition = s.position;
+    } else if (forceNextSnap) {
+      // mpv 还没回报新 position(IPC 在飞),先标记;下次 position 变化时再 snap
+      // 不立即重置 forceNextSnap,直到真正 snap 完成
     }
 
     if (s.isPlaying) {
@@ -111,7 +130,25 @@ function stopIfNoSubscribers(): void {
     lastSeenPosition = -Infinity;
     wasPlaying = false;
     pauseFreezeUntil = 0;
+    forceNextSnap = false;
   }
+}
+
+/**
+ * 用户主动操作(单帧步进、seek、loadFile 等)调用此函数,告诉虚拟播放头
+ * "下次 mpv position 变化是预期的,无视阈值直接 snap 到新位置"。
+ *
+ * 必须在 mpv IPC 之前调用,否则可能错过(虽然单例 tick 一直跑,标记直到
+ * mpv 回报新 position 才消费)。
+ *
+ * 设计上不直接 displayed = newPos,因为此时 mpv IPC 还在飞,store.position
+ * 还是旧值;只在 store.position 实际变化的下一帧 snap。
+ */
+export function forcePlayheadSnap(): void {
+  forceNextSnap = true;
+  // 立即解除冻结窗,允许 snap 立即生效(用户暂停后单帧步进不应被
+  // PAUSE_FREEZE 280ms 吞掉视觉反馈)
+  pauseFreezeUntil = 0;
 }
 
 /**

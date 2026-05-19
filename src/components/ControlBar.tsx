@@ -281,10 +281,13 @@ export function ControlBar() {
       className="flex flex-col gap-1 px-4 py-2 bg-neutral-950 border-t border-white/10 select-none"
       style={{ zIndex: 20, position: "relative" }}
     >
-      {/* Progress bar — HeroUI Slider 视觉风格：轨道常驻、主色填充、圆点常驻 hover 放大 */}
+      {/* Progress bar — HeroUI Slider 视觉风格：轨道常驻、主色填充、圆点常驻 hover 放大
+          contain: layout paint —— 隔离 thumb 的 left:% 更新带来的 layout pass,
+          不波及外层 ControlBar 的其他元素 */}
       <div
         ref={progressRef}
         className="relative h-5 group cursor-pointer flex items-center"
+        style={{ contain: "layout paint" }}
         onMouseDown={handleProgressDown}
         onMouseMove={handleProgressMouseMove}
         onMouseLeave={handleProgressMouseLeave}

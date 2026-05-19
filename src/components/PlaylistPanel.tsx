@@ -25,7 +25,13 @@ export function PlaylistPanel() {
   const [resizing, setResizing] = useState(false);
   const resizeRafRef = useRef<number | null>(null);
 
-  if (collapsed) return null;
+  // ★ 不再 conditional return null ★
+  // 之前 collapsed 时 unmount，配合 mpv setVideoMarginRatio 异步 IPC，会有
+  // 80-200ms 的"DOM 缺席瞬态"——那 280px 区域无不透明 DOM、mpv 还没绘制 →
+  // Tauri 透明窗口穿透到桌面 → 用户看到"白色漏光"。
+  // 改为始终挂载 + transform: translateX(width) 滑出右屏外。DOM 永远占住那
+  // 280px 不透明黑底，mpv margin 怎么切都不会露底。打开/关闭通过 CSS
+  // transform transition 滑入滑出，零 layout/paint，纯合成器动画。
 
   // 拖动左边缘改变 playlist 宽度（向左拉变宽，向右收缩；range 200–600）。
   // rAF 节流避免 60+Hz 触发的 React render 风暴。
@@ -102,8 +108,20 @@ export function PlaylistPanel() {
 
   return (
     <aside
-      className="relative flex flex-col h-full border-l border-white/10 bg-neutral-950 anim-slide-right"
-      style={{ width, zIndex: 20 }}
+      className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-white/10 bg-neutral-950"
+      style={{
+        width,
+        // collapsed: 滑到右屏外（translateX 等于自身宽度），可见时停在 right:0
+        transform: collapsed ? `translateX(${width}px)` : "translateX(0)",
+        // resizing 时关闭 transition，避免拖动改变 width 跟 transform 联动卡顿
+        transition: resizing ? "none" : "transform 220ms cubic-bezier(0.16, 1, 0.3, 1)",
+        zIndex: 20,
+        // 关掉合成时的 hint，提高 144Hz 屏上的丝滑度
+        willChange: "transform",
+        // 容器隔离：自己的 layout/paint 不波及外层（光标 rAF 高频写 DOM 时受益）
+        contain: "layout paint",
+      }}
+      aria-hidden={collapsed}
     >
       {/* 左边缘拖动条 —— 宽 5px，hover/active 时高亮 primary；占用 z-index 30 避免被列表盖住 */}
       <div

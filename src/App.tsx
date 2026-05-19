@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Download } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TopBar } from "./components/TopBar";
@@ -138,22 +138,13 @@ function App() {
 
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
-  const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
   const showWaveform = useSettingsStore((s) => s.showWaveform);
 
-  // 桌面 UX：playlist 关→开时，mpv 的 video-margin IPC 需要 ~30-80ms 才能让出
-  // 那 280px 区域。如果立刻 mount PlaylistPanel，mpv 子窗口（绘制在 webview 上）
-  // 会短暂盖住 playlist 文字。先等 mpv 退让再渲染。
-  const [renderPlaylist, setRenderPlaylist] = useState(!playlistCollapsed);
-  useEffect(() => {
-    if (playlistCollapsed) {
-      setRenderPlaylist(false); // 关闭：立即移除
-      return;
-    }
-    // 打开：让 useVideoMargins 先发出 IPC，再 mount
-    const t = setTimeout(() => setRenderPlaylist(true), 80);
-    return () => clearTimeout(t);
-  }, [playlistCollapsed]);
+  // 注：PlaylistPanel 改为"始终挂载 + transform translateX 滑入滑出"模式（详见
+  // PlaylistPanel.tsx）。DOM 永久存在右侧 playlistWidth 不透明黑底区域，消除
+  // 了 mount/unmount 与 mpv margin IPC 异步之间的"DOM 缺席瞬态"，从根上避免
+  // Tauri 透明窗口穿透到桌面（漏光）。所以不再需要任何 renderPlaylist 延迟
+  // / guard 占位逻辑。collapsed 状态由 PlaylistPanel 自己从 settingsStore 读。
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -181,7 +172,8 @@ function App() {
           <ErrorToast />
           <TopBar />
         </main>
-        {!fullscreen && renderPlaylist && <PlaylistPanel />}
+        {/* PlaylistPanel 自带 absolute 定位 + transform 控制可见，不占 flex 布局 */}
+        {!fullscreen && <PlaylistPanel />}
       </div>
 
       <FullscreenAutoHide>
