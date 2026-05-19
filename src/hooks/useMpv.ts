@@ -72,7 +72,11 @@ async function handleEof(): Promise<void> {
   if (total === 0) return;
 
   if (mode === "loop-single") {
-    // 单曲循环：seek 到开头并恢复播放（mpv 在 EOF 后 pause=true，先放回去再 seek）
+    // 单曲循环正路是 mpv 的 loop-file=inf(在解码器层无缝循环,详见
+    // useLoopMode hook)。设了它之后 mpv 根本不会触发 eof-reached,
+    // 所以正常路径不会走到这里。这个分支保留作 fallback:某些容器/
+    // 编码下 loop-file 万一不生效,起码还能靠 JS seek(0) + unpause
+    // 兜底续播——代价是会有一瞬延迟,但比直接 EOF 停下来强。
     try {
       await seekAbsolute(0);
       await setProperty("pause", false);

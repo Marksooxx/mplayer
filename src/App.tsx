@@ -14,6 +14,7 @@ import { useVideoMargins } from "./hooks/useVideoMargins";
 import { useLaunchFiles } from "./hooks/useLaunchFiles";
 import { useGracefulShutdown } from "./hooks/useGracefulShutdown";
 import { useAlwaysOnTop } from "./hooks/useAlwaysOnTop";
+import { useLoopMode } from "./hooks/useLoopMode";
 import { usePlayerStore } from "./store/playerStore";
 import { useSettingsStore } from "./store/settingsStore";
 
@@ -116,6 +117,7 @@ function App() {
   useLaunchFiles();
   useGracefulShutdown();
   useAlwaysOnTop();
+  useLoopMode();
 
   // 启动序列（防白闪 + 防透明窗）：
   //   1. tauri.conf.json visible: false → 窗口创建后不可见

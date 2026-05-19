@@ -780,6 +780,41 @@ PlaylistPanel 为了滑入滑出动画用了 `transform: translateX(0/width)`（
 - 早期 §6.21 / §6.23 已经梳理过"透明窗下任何视频区都必须有 DOM 占位 OR mpv 子窗口填充"的铁律，但**子窗口创建时刻** 这个边界条件被忽视了。把"子窗口存在性"从"loadfile 之后"提前到"plugin init 之后"，就消除了所有"加载瞬间穿透"场景。
 - mpv idle / force-window 不只是"无文件时显示什么"的问题，而是"OS 子窗口存在与否"的开关。Tauri 透明窗这种依赖子窗口当遮罩的方案下，这俩选项几乎是必开的。
 
+### 6.29 单曲循环不无缝 —— JS event-driven loop 永远做不到 sample-accurate
+
+**现象**：playbackMode = `loop-single`,可循环音频(在 DAW 里 sample-accurate 无缝)在 mplayer 里 loop 起点能听到一瞬空白/卡顿。视频文件循环也有同样的画面短暂停顿,只是听觉不如音频敏感。
+
+**根因**:早期实现走 JS event-driven 路径:
+
+```
+mpv 解码到文件末尾
+  └─► mpv 发出 eof-reached property-change 事件
+        └─► IPC 跨进程边界 (mpv → Tauri → WebView2 → JS)
+              └─► useMpv observer 回调 → handleEof()
+                    └─► await seekAbsolute(0)        ← IPC 1
+                          └─► mpv 解码器跳到起始 (有 demux + 解码 lead-in)
+                                └─► await setProperty('pause', false)  ← IPC 2
+                                      └─► 终于继续播放
+```
+
+整条链路的累计延迟在硬件上有 30-150ms 不等(IPC roundtrip 各 ~5-20ms,event 派发 ~5ms,demux seek ~10-50ms,解码器 lead-in 50-100ms);音频输出缓冲被掏空 → 你听到的"loop 瞬间空白"。**JS 永远做不到 sample-accurate 循环** —— 即使把 IPC 和 event 优化到零,解码器的 seek lead-in 也不可能为零。
+
+**修复**:让 mpv 在解码器层自己循环。mpv 内置 `loop-file=inf` 属性 ——
+
+- 解码器从文件末尾 sample 直接接到起始 sample,**audio output 缓冲连续不掉一帧**
+- 不发 `eof-reached` 事件,JS observer 完全旁路
+- 零 IPC,零 JS roundtrip
+- 行为跟 DAW 的 sample-accurate loop 一致
+
+实现是 `src/hooks/useLoopMode.ts` 一个 sidecar hook:监听 `settingsStore.playbackMode`,变成 `loop-single` 时 `setProperty('loop-file', 'inf')`,其它模式 `setProperty('loop-file', 'no')`。`loop-file` 是 mpv global property,`loadfile` 后保持,不需要每次切文件 reaffirm。
+
+`useMpv.handleEof` 里的 `loop-single` 分支保留作 fallback:某些容器/编码下 `loop-file` 万一不生效,仍能靠 JS seek(0)+unpause 兜底续播 —— 代价是非无缝,但比 EOF 后停下来强。
+
+**经验教训**:
+- **任何要"无缝"的事情都不能走 JS event loop** —— Web 技术栈跟 native audio 引擎的延迟量级差两个数量级(JS event/IPC 是毫秒级,解码器 sample 是亚毫秒级)。要无缝就必须下沉到引擎(mpv / native audio API)自己处理。
+- 这同样适用于 **gapless playback**(连播两个文件无空隙)。mpv 有 `prefetch-playlist=yes` + `--gapless-audio=yes` 可以实现,目前没接 —— 留作未来优化。如果用户报告播放列表切歌有空白,按同样原理走 mpv 内部 prefetch 而不是 JS 监听 EOF 再加载下一首。
+- 类比:这跟 §6.22 "不要相信外部状态机在状态转换边界上的瞬时值" 同根 —— **状态转换边界上 JS 的及时性都不够用**,要么下沉到 native,要么接受不无缝。
+
 ---
 
 ## 7. 性能 / UX 考量
@@ -881,6 +916,7 @@ PlaylistPanel 为了滑入滑出动画用了 `transform: translateX(0/width)`（
 | TrackMenu（音轨 / 字幕轨 / 加载外部字幕 / 字幕延迟） | `src/components/TrackMenu.tsx` |
 | PlayerView（drop 分流字幕 vs 媒体） | `src/components/PlayerView.tsx` |
 | 全屏 edge-reveal hook（顶/底独立带） | `src/App.tsx` (`useFullscreenReveal`) |
+| 单曲循环 mpv loop-file 同步（无缝循环） | `src/hooks/useLoopMode.ts` |
 | 冷启动黑底占位 | `index.html` (`#boot-bg`) |
 | 启动入口 | `start-dev.ps1` / `start-dev.bat` |
 | DLL 复制逻辑 | `src-tauri/build.rs` |
