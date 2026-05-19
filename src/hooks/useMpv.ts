@@ -111,13 +111,21 @@ async function ensureInit(): Promise<void> {
       "input-default-bindings": "no",
       "input-vo-keyboard": "no",
       // ★ 漏光防御 ★
-      // Tauri transparent:true + WebView2 透明区域会穿透到桌面。video-margin-ratio
-      // 让出的右侧/底部区域如果 mpv 不绘制 → 漏光。
-      // mpv 0.40+: --background-color 控制非视频区填充色,--background=color 强制
-      // 用此色填充而不是透明。两者一起 → mpv 在 margin 区域永远输出纯黑帧 →
-      // 不透明 → 不漏光。
+      // Tauri transparent:true + WebView2 透明区域会穿透到桌面。
+      // 三层组合保证 mpv 子窗口永远是不透明黑色,从根上消除"mpv 子窗口创建
+      // 但还没绘制视频帧"那一瞬透到桌面:
+      //   - background-color=#000000  非视频区填充色为纯黑
+      //   - background=color          强制用 background-color 填充而不是 alpha
+      //                               透明(mpv 0.40+ 新语义)
+      //   - force-window=yes          mpv init 时立即创建子窗口并持续存在,
+      //                               不等 file-loaded → 用户从启动到加载第
+      //                               一个视频期间也看到黑底而不是透明穿透
+      //                               (注意:不能用 immediate,会跟 background
+      //                                 组合死锁,见 §6.4)
       "background-color": "#000000",
       background: "color",
+      "force-window": "yes",
+      "idle": "yes",
       volume: settings.volume,
       mute: settings.muted ? "yes" : "no",
       speed: settings.speed,
