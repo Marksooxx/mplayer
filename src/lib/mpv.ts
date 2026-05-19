@@ -97,6 +97,24 @@ export async function setAudioTrack(aid: number | "no"): Promise<void> {
   await setProperty("aid", aid as unknown as string | number);
 }
 
+/** 加载外部字幕文件,加载后 mpv 自动 select 为当前 sid */
+export async function addSubtitle(path: string): Promise<void> {
+  await command("sub-add", [path, "select"]);
+}
+
+/** 字幕延迟(秒);正值=字幕延后显示 */
+export async function setSubDelay(seconds: number): Promise<void> {
+  await setProperty("sub-delay", seconds);
+}
+export async function getSubDelay(): Promise<number> {
+  try {
+    const v = await getProperty("sub-delay", "double");
+    return typeof v === "number" ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function stopPlayback(): Promise<void> {
   await command("stop");
 }

@@ -2,8 +2,23 @@ import { useEffect, useRef } from "react";
 import { Film, Loader2, Music4 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../store/playerStore";
-import { setVolumeProp, togglePause } from "../lib/mpv";
+import { addSubtitle, setVolumeProp, togglePause } from "../lib/mpv";
 import { playIndex } from "../hooks/useMpv";
+
+const SUBTITLE_EXTS = new Set([
+  "srt", "ass", "ssa", "sub", "vtt", "idx", "smi", "sup",
+]);
+
+function classifyDrops(paths: string[]): { subs: string[]; media: string[] } {
+  const subs: string[] = [];
+  const media: string[] = [];
+  for (const p of paths) {
+    const ext = p.split(/[.]/).pop()?.toLowerCase() ?? "";
+    if (SUBTITLE_EXTS.has(ext)) subs.push(p);
+    else media.push(p);
+  }
+  return { subs, media };
+}
 
 const SINGLE_CLICK_DELAY = 250;
 
@@ -68,10 +83,23 @@ export function PlayerView() {
             setDragHover(false);
             const paths = event.payload.paths;
             if (paths.length === 0) return;
-            const startEmpty = playlist.length === 0;
-            const added = appendToPlaylist(paths);
-            if (startEmpty && added.length > 0) {
-              void playIndex(0);
+            // 字幕 vs 媒体 分类:字幕走 mpv sub-add(需要已有当前播放视频),
+            // 其他走 playlist 入列
+            const { subs, media } = classifyDrops(paths);
+            const state = usePlayerStore.getState();
+            if (subs.length > 0 && state.currentIndex >= 0) {
+              for (const sub of subs) {
+                void addSubtitle(sub).catch((err) =>
+                  console.error("[drop] sub-add failed", err),
+                );
+              }
+            }
+            if (media.length > 0) {
+              const startEmpty = playlist.length === 0;
+              const added = appendToPlaylist(media);
+              if (startEmpty && added.length > 0) {
+                void playIndex(0);
+              }
             }
             break;
           }

@@ -13,7 +13,13 @@ const AUDIO_EXTENSIONS = ["mp3", "flac", "wav", "ogg", "m4a", "aac", "wma", "opu
 const TRIGGER_HEIGHT = 60; // 鼠标进入顶部 60px 范围内触发显示
 const HIDE_DELAY = 2500; // 离开后 2.5 秒淡出
 
-export function TopBar() {
+interface Props {
+  /** 全屏时由 App 的 useFullscreenReveal 决定 TopBar 的可见性。
+      非全屏时此值始终 true,TopBar 自己内部 autoHide/hidden 逻辑决定。 */
+  fullscreenTopVisible?: boolean;
+}
+
+export function TopBar({ fullscreenTopVisible = true }: Props) {
   const playlist = usePlayerStore((s) => s.playlist);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
   const fullscreen = usePlayerStore((s) => s.fullscreen);
@@ -95,10 +101,11 @@ export function TopBar() {
   };
 
   if (hidden) return null;
-  if (fullscreen) return null;
 
   const current = currentIndex >= 0 ? playlist[currentIndex] : null;
-  const show = !autoHide || visible;
+  // 全屏:由外部 fullscreenTopVisible 控制(鼠标到顶部 80px 内才显示)
+  // 非全屏:跟设置的 autoHide 走;关掉 autoHide 一直显示
+  const show = fullscreen ? fullscreenTopVisible : !autoHide || visible;
 
   return (
     <div

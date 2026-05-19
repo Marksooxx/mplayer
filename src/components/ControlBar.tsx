@@ -343,6 +343,10 @@ export function ControlBar() {
           <IconBtn onClick={handleMuteToggle} label={muted ? "取消静音" : "静音"}>
             <VolumeIcon size={18} />
           </IconBtn>
+          {/* 百分比数字放在 mute 和 slider 之间(原来在 slider 右,挪到左) */}
+          <span className="text-xs tabular-nums text-white/70 w-9 text-right select-none mr-0.5">
+            {muted ? 0 : displayVolume}%
+          </span>
           <div
             className="relative w-24 h-5 flex items-center cursor-pointer group"
             onMouseDown={handleVolume}
@@ -369,10 +373,6 @@ export function ControlBar() {
               }}
             />
           </div>
-          {/* 百分比数字 —— tabular-nums + 固定宽度,数字变化不抖动 */}
-          <span className="ml-1 text-xs tabular-nums text-white/70 w-9 text-right select-none">
-            {muted ? 0 : displayVolume}%
-          </span>
         </div>
 
         {/* Speed */}

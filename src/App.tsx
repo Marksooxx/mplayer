@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Download } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TopBar } from "./components/TopBar";
@@ -17,49 +17,57 @@ import { useAlwaysOnTop } from "./hooks/useAlwaysOnTop";
 import { usePlayerStore } from "./store/playerStore";
 import { useSettingsStore } from "./store/settingsStore";
 
-function FullscreenAutoHide({ children }: { children: React.ReactNode }) {
+/**
+ * 全屏 edge-reveal:鼠标移到顶部 80px 内 → 显示 TopBar;移到底部 140px 内
+ * → 显示 ControlBar + WaveformStrip;离开边缘立即隐藏;3s 不动隐藏 cursor。
+ * 非全屏:始终 visible,cursor 永远显示。
+ */
+function useFullscreenReveal(): {
+  fullscreen: boolean;
+  topVisible: boolean;
+  bottomVisible: boolean;
+} {
   const fullscreen = usePlayerStore((s) => s.fullscreen);
-  const setControlsVisible = usePlayerStore((s) => s.setControlsVisible);
-  const controlsVisible = usePlayerStore((s) => s.controlsVisible);
+  const [topVisible, setTopVisible] = useState(!fullscreen);
+  const [bottomVisible, setBottomVisible] = useState(!fullscreen);
 
   useEffect(() => {
     if (!fullscreen) {
-      setControlsVisible(true);
+      setTopVisible(true);
+      setBottomVisible(true);
       document.body.classList.remove("cursor-hidden");
       return;
     }
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const reset = () => {
-      setControlsVisible(true);
+    // 全屏初始:都隐藏
+    setTopVisible(false);
+    setBottomVisible(false);
+
+    let cursorTimer: ReturnType<typeof setTimeout> | null = null;
+    const TOP_BAND = 80;
+    const BOTTOM_BAND = 140; // ControlBar 60 + WaveformStrip 56 + 余量
+
+    const onMove = (e: MouseEvent) => {
+      const h = window.innerHeight;
+      const nearTop = e.clientY < TOP_BAND;
+      const nearBottom = e.clientY > h - BOTTOM_BAND;
+      setTopVisible(nearTop);
+      setBottomVisible(nearBottom);
+      // cursor 3s 不动隐藏
       document.body.classList.remove("cursor-hidden");
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        setControlsVisible(false);
+      if (cursorTimer) clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(() => {
         document.body.classList.add("cursor-hidden");
       }, 3000);
     };
-    reset();
-    window.addEventListener("mousemove", reset);
-    window.addEventListener("keydown", reset);
+    window.addEventListener("mousemove", onMove);
     return () => {
-      if (timer) clearTimeout(timer);
-      window.removeEventListener("mousemove", reset);
-      window.removeEventListener("keydown", reset);
+      window.removeEventListener("mousemove", onMove);
+      if (cursorTimer) clearTimeout(cursorTimer);
       document.body.classList.remove("cursor-hidden");
     };
-  }, [fullscreen, setControlsVisible]);
+  }, [fullscreen]);
 
-  return (
-    <div
-      style={{
-        transition: "opacity 200ms ease",
-        opacity: fullscreen && !controlsVisible ? 0 : 1,
-        pointerEvents: fullscreen && !controlsVisible ? "none" : "auto",
-      }}
-    >
-      {children}
-    </div>
-  );
+  return { fullscreen, topVisible, bottomVisible };
 }
 
 function DragHoverOverlay() {
@@ -145,7 +153,7 @@ function App() {
     return () => window.removeEventListener("contextmenu", block, { capture: true });
   }, []);
 
-  const fullscreen = usePlayerStore((s) => s.fullscreen);
+  const { fullscreen, topVisible, bottomVisible } = useFullscreenReveal();
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
   const showWaveform = useSettingsStore((s) => s.showWaveform);
   const playlistCollapsed = useSettingsStore((s) => s.playlistCollapsed);
@@ -181,6 +189,21 @@ function App() {
     };
   }, [setFullscreen]);
 
+  // 全屏底部控件容器:全屏时 absolute bottom-0 + transform 滑入滑出。
+  // 非全屏时 flex 子项,正常占位。
+  const bottomContainerStyle: React.CSSProperties = fullscreen
+    ? {
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 30,
+        transform: bottomVisible ? "translateY(0)" : "translateY(110%)",
+        transition: "transform 220ms cubic-bezier(0.16, 1, 0.3, 1)",
+        pointerEvents: bottomVisible ? "auto" : "none",
+      }
+    : {};
+
   return (
     <div className="w-screen h-screen flex flex-col overflow-hidden" style={{ background: "transparent" }}>
       <KeyboardShortcuts />
@@ -189,10 +212,10 @@ function App() {
         <main className="flex-1 relative min-w-0" style={{ background: "transparent" }}>
           <PlayerView />
           <ErrorToast />
-          <TopBar />
+          {/* TopBar 自己内部 visible 逻辑;全屏时通过 fullscreenTopVisible 外控 */}
+          <TopBar fullscreenTopVisible={fullscreen ? topVisible : true} />
         </main>
-        {/* spacer：占据 PlaylistPanel 应有的 flex 空间，让 main 收缩到视频区。
-            width 跟随 playlistCollapsed，跟 PlaylistPanel transform 同步 transition。 */}
+        {/* spacer：占据 PlaylistPanel 应有的 flex 空间，让 main 收缩到视频区。 */}
         {!fullscreen && (
           <div
             aria-hidden
@@ -203,16 +226,13 @@ function App() {
             }}
           />
         )}
-        {/* PlaylistPanel 自带 absolute 定位 + transform 控制可见，不占 flex 布局 */}
         {!fullscreen && <PlaylistPanel />}
       </div>
 
-      <FullscreenAutoHide>
-        <div style={{ display: fullscreen ? "none" : "block" }}>
-          {showWaveform && <WaveformStrip height={56} />}
-          <ControlBar />
-        </div>
-      </FullscreenAutoHide>
+      <div style={bottomContainerStyle}>
+        {showWaveform && <WaveformStrip height={56} />}
+        <ControlBar />
+      </div>
 
       <SettingsPanel />
       <GotoFrameDialog />

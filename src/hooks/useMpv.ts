@@ -296,6 +296,24 @@ export function useMpv(): void {
         if (ev.event === "file-loaded") {
           console.log("[mpv] file-loaded");
           usePlayerStore.getState().setFileLoaded(true);
+          // mpv property-change 在某些容器/无音频流场景下首次 file-loaded
+          // 后偶尔不发 time-pos/pause/duration —— 表现为"播放但进度条不动"。
+          // 这里主动 getProperty 一次兜底。
+          void (async () => {
+            const ss = usePlayerStore.getState();
+            try {
+              const pause = await getProperty("pause", "flag");
+              if (typeof pause === "boolean") ss.setIsPlaying(!pause);
+            } catch { /* ignore */ }
+            try {
+              const pos = await getProperty("time-pos", "double");
+              if (typeof pos === "number") ss.setPosition(pos);
+            } catch { /* ignore */ }
+            try {
+              const dur = await getProperty("duration", "double");
+              if (typeof dur === "number") ss.setDuration(dur);
+            } catch { /* ignore */ }
+          })();
           return;
         }
         if (ev.event === "start-file") {
@@ -330,8 +348,29 @@ export function useMpv(): void {
       }
     })();
 
+    // time-pos fallback polling:某些容器(尤其无音频视频)mpv 不持续发
+    // time-pos property change → 进度条停在 0 不动。每 1s 主动 poll 一次
+    // mpv 真实 time-pos 兜底。播放中且有 currentIndex 才 poll,避免空载浪费。
+    const pollInterval = setInterval(() => {
+      const s = usePlayerStore.getState();
+      if (!s.mpvReady || !s.isPlaying || s.currentIndex < 0 || !s.fileLoaded) return;
+      void (async () => {
+        try {
+          const pos = await getProperty("time-pos", "double");
+          if (typeof pos === "number" && !Number.isNaN(pos)) {
+            const cur = usePlayerStore.getState().position;
+            // 只在差异 > 100ms 时更新,避免覆盖正常的 property-change 事件链
+            if (Math.abs(pos - cur) > 0.1) {
+              usePlayerStore.getState().setPosition(pos);
+            }
+          }
+        } catch { /* ignore */ }
+      })();
+    }, 1000);
+
     return () => {
       cancelled = true;
+      clearInterval(pollInterval);
       unlistenProps?.();
       unlistenEvents?.();
       // 注意：不 destroy()。mpv 实例随进程退出由 OS 回收。
