@@ -1,0 +1,25 @@
+
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bgGradient" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#FF416C"/>
+            <stop offset="1" stop-color="#FF4B2B"/>
+        </linearGradient>
+        <filter id="shadow" x="0" y="0" width="256" height="276" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+            <feDropShadow dx="0" dy="8" stdDeviation="7.5" flood-opacity="0.2"/>
+        </filter>
+        <filter id="iconShadow" x="0" y="0" width="256" height="256" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+            <feDropShadow dx="0" dy="4" stdDeviation="4" flood-opacity="0.15"/>
+        </filter>
+    </defs>
+    
+    <circle cx="128" cy="128" r="118" fill="url(#bgGradient)" filter="url(#shadow)"/>
+    
+    <g filter="url(#iconShadow)">
+        <!-- M Shape -->
+        <path d="M76 180 L76 76 L128 112 L180 76 L180 180" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+        
+        <!-- Play Button -->
+        <path d="M115 134 L147 150 L115 166 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="6" stroke-linejoin="round"/>
+    </g>
+</svg>
