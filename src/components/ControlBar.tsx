@@ -231,6 +231,13 @@ export function ControlBar() {
   };
 
   const handleVolume = (e: React.MouseEvent) => {
+    // Ctrl+click 恢复默认音量(80%),不进入拖动模式
+    if (e.ctrlKey) {
+      void setVolumeProp(80);
+      if (muted) void setMutedProp(false);
+      return;
+    }
+
     const el = e.currentTarget as HTMLDivElement;
     const rect = el.getBoundingClientRect();
     const computeFromX = (x: number) => {
@@ -339,7 +346,7 @@ export function ControlBar() {
           <div
             className="relative w-24 h-5 flex items-center cursor-pointer group"
             onMouseDown={handleVolume}
-            title={`音量 ${muted ? 0 : displayVolume}`}
+            title={`音量 ${muted ? 0 : displayVolume}%（Ctrl+点击恢复 80%）`}
           >
             <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 group-hover:h-2 bg-white/20 rounded-full transition-[height] duration-150" />
             {/*
@@ -362,6 +369,10 @@ export function ControlBar() {
               }}
             />
           </div>
+          {/* 百分比数字 —— tabular-nums + 固定宽度,数字变化不抖动 */}
+          <span className="ml-1 text-xs tabular-nums text-white/70 w-9 text-right select-none">
+            {muted ? 0 : displayVolume}%
+          </span>
         </div>
 
         {/* Speed */}
