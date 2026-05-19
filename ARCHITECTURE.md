@@ -149,7 +149,8 @@ hooks/
 lib/
 ├── mpv.ts                业务命令封装：loadFile / setPaused / togglePause / seekRelative / seekAbsolute /
 │                         frameStep / frameBackStep / frameStepBy / setVolumeProp / setMutedProp /
-│                         setSpeedProp / setSubtitleTrack / setAudioTrack / parseTrackList / getCurrentTracks
+│                         setSpeedProp / setSubtitleTrack / setAudioTrack / addSubtitle / setSubDelay /
+│                         getSubDelay / stopPlayback / parseTrackList / getCurrentTracks
 ├── shortcuts.ts          ShortcutAction 枚举 + ACTION_LABELS + DEFAULT_SHORTCUTS + eventToCombo / displayCombo /
 │                         FRAME_STEP_MIN/MAX/DEFAULT 常量
 ├── persist.ts            getResumePosition / savePosition / clearPosition / clearAllPositions /
@@ -179,6 +180,11 @@ src-tauri/build.rs   编译时复制 lib/*.dll 到 target/<profile>/（详见 §
 
 ```
 [拖拽 / dialog.open]
+        │
+        ▼
+classifyDrops(paths)            按扩展分流：.srt/.ass/.ssa/.sub/.vtt/.idx/.smi/.sup
+                                → addSubtitle()（仅当 currentIndex≥0 时）
+                                其它 → 进 playlist 入列分支（详见 §4.5）
         │
         ▼
 appendToPlaylist(paths)         playerStore.playlist 增加
@@ -277,6 +283,40 @@ WaveformStrip useEffect(path 变化)
             感受到帧率低。另有一个独立的"光标 div" (WaveformCursor) 也接同一个
             playhead，即使 wavesurfer media 解码失败也能跟着 mpv 走。详见 §6.22
 ```
+
+### 4.5 字幕加载（外部）
+
+```
+入口 A：drag&drop                         入口 B：TrackMenu「加载字幕文件…」
+  PlayerView.onDragDropEvent('drop')        plugin-dialog open({ filters: 8 种扩展 })
+        │                                       │
+        └──► classifyDrops → subs[]             └──► path
+                ↓                                       ↓
+            (currentIndex≥0 才走;                addSubtitle(path)
+             否则丢弃,字幕没有"独立播放"语义)
+                            ↓
+                  addSubtitle(path)
+                            │
+                            ▼
+                  mpv command("sub-add", [path, "select"])
+                            │
+                            ▼
+                  mpv 异步:track-list property-change
+                            │
+                            ▼
+                  TrackMenu 重渲染列出新增 sub 轨道,sid 自动选中
+
+字幕延迟同步:
+  TrackMenu 打开时(open 状态切 true)
+        │
+        ▼
+  getSubDelay() → setProperty("sub-delay")
+        │
+        ▼
+  按钮 ±100ms / 重置 0 → setSubDelay(value)
+```
+
+mpv 1.x 起 `sub-add path select` 既加入也激活字幕轨;`sub-delay` 是浮点秒，正值=字幕延后显示。
 
 ---
 
@@ -635,6 +675,111 @@ mpv 0.40 把选项重命名了：旧 `--background` → `--background-color`（�
 
 **经验教训**：mpv 初始化选项是"地雷区"——看起来无害的两个选项组合可能死锁/挂起，且没有任何错误日志。新加 mpv 选项的规范流程：**release build 测一遍 init 能否完成 + 视频能否播 + 切换文件能否切**，缺一不可。
 
+> **后续生产实施（见 §6.28）**：`force-window=yes + idle=yes + background-color=#000000 + background=color` 后来被实际启用以根除首次视频加载瞬间桌面穿透。
+
+### 6.25 mpv `time-pos` property-change 在无音频 / 部分容器场景下不持续发出
+
+**现象**：拖入一段没有音轨的 mp4 / webm（或部分 m4v / ts 容器），mpv 正常播放（双击有暂停反馈、duration 显示正常、画面也在走），但**进度条停在 0 不动**；切换到普通有音轨视频又一切正常。
+
+**根因**：mpv 的 property change 通知不是 100% 可靠的——某些 demuxer / 无 audio renderer 的回调路径下，`time-pos` 只在 file-loaded 那一刻发一次"初始值 0"，之后**不再周期性 emit**。`useMpv` 的 observer 没有事件可监听，store 里的 `position` 一直停在 0。`useCursorAnimation` 虽然在 rAF 里推动 displayed，但虚拟播放头要么以 store.position 为 anchor 做外推、要么在 PAUSE 检测下不外推——anchor 一直是 0，导致光标看上去没动。
+
+**修复**（两层兜底，互相独立）：
+
+1. **`file-loaded` 后主动 sync** —— 监听到 `file-loaded` 事件立刻 `getProperty('pause' | 'time-pos' | 'duration')` 一次填回 store。覆盖"切文件后第一帧的初始值丢失"。
+2. **1Hz 轮询 fallback** —— `useMpv` mount 时挂一个 `setInterval(1000)`：满足 `mpvReady && isPlaying && currentIndex≥0 && fileLoaded` 才发 `getProperty('time-pos')`，差异 > 100ms 才覆盖 `store.position`。这个阈值是为了让正常的 property-change 链（在能跑的视频上 ~30Hz）继续主导更新，**只在它沉默时**补一次。
+
+为什么不无脑提高 polling 频率？两个原因：
+- IPC 不便宜，1Hz 即可让"进度条停滞"问题在用户感知上消失（位置最多落后 1 秒，rAF 虚拟播放头会平滑外推填空）
+- 跟 property-change 30Hz 频率重叠会让 store.position 来回被两个 source 写,反而引入抖动
+
+**经验教训**：libmpv property observer 是"高可用但非保证"——把它当成主信道，但每个核心同步都要有 fallback 路径。`time-pos` 是受这种漏发影响最严重的属性（高频且核心交互依赖），其它属性（duration / volume / mute）只在变化时发，一次成功就够，不需要 polling。
+
+### 6.26 fixed-positioned 子代被 transform/contain/filter 父链"吞掉"——React Portal 才能真正脱离
+
+**现象**：PlaylistItem 的右键菜单（`position: fixed`）本来应该跟着鼠标点位置出现，但在 PlaylistPanel 里点右键**完全看不见菜单**；移到顶部 TopBar 区域点右键又能正常出现。怀疑 z-index 被压低，加到 z-[9999] 还是看不见。
+
+**根因（耗时多轮才定位）**：CSS 规范里 fixed 元素的 containing block **默认是 viewport**，但只要祖先链上**任何一个**祖先满足以下条件，containing block 就被改为那个祖先：
+
+- `transform` 任意非 `none` 值（**最常踩的坑**）
+- `perspective` 非 `none`
+- `filter` 非 `none`
+- `will-change` 包含 `transform` / `filter` / `perspective`
+- `backdrop-filter` 非 `none`
+- `contain: paint` / `contain: layout` / `contain: strict`
+
+PlaylistPanel 为了滑入滑出动画用了 `transform: translateX(0/width)`（详见 §6.23），它的 transform 把所有内部 fixed 子代的"viewport 锚定"拉到了 panel 的边界框内。panel 自己宽 280px，菜单 `left: e.clientX (鼠标全局 X)` 会被解读为"相对 panel 左上角"——结果菜单实际渲染在屏幕外面，看不见。
+
+**早期错误猜测**：以为是 `contain: paint`，移除后无效；以为是 z-index，提到 9999 也无效。直到读到 MDN containing-block 规范才意识到 transform 也算。
+
+**修复**：用 React `createPortal(menuJSX, document.body)` 把菜单的 DOM 节点直接挂到 `<body>` 下。**Portal 只移动 DOM 不影响 React tree**——事件冒泡仍按 React tree（菜单 onClick 还能拿到 PlaylistItem 的 state 闭包），但 CSS 渲染（containing block 计算）按真实 DOM 父链——body 下没有任何 transform/contain 祖先，fixed 定位重新锚定到 viewport。
+
+```tsx
+{menu && createPortal(
+  <>
+    <div className="fixed inset-0 z-[120]" onClick={closeMenu} />
+    <div className="fixed z-[121] ..." style={{ left: menu.x, top: menu.y }}>...</div>
+  </>,
+  document.body,
+)}
+```
+
+**经验教训**：
+- 任何"我用了 transform 做合成器动画"的容器，**它内部的 fixed 定位元素都已经不是 fixed-to-viewport 了**。这是 CSS 的隐式行为，跟 `position: fixed` 字面意思完全相反。
+- 不止 transform——`contain: paint`/`filter`/`will-change: transform`/`backdrop-filter` 都有同样副作用。任何用了它们做合成器优化的容器都要警惕。
+- Portal 是逃逸唯一可靠方案。z-index、translate offset 等"调位置"补救都治标不治本，跨 viewport 边界还会因不同分辨率失效。
+
+### 6.27 全屏整体 auto-hide 太粗暴 —— 改为顶/底独立 edge-reveal
+
+**现象/反馈**：早期版本全屏后 TopBar + ControlBar + WaveformStrip 整体跟 3s mouse-idle 一起隐藏；用户报告"想看一眼进度只能动一下鼠标，整组 UI 跳出来打断观看"。
+
+**改进设计**：
+
+| 区域 | 触发条件 | 隐藏条件 |
+|---|---|---|
+| TopBar (文件名) | 鼠标 y < 80px | y ≥ 80px 立即隐 |
+| 底部容器 (Waveform+ControlBar) | 鼠标 y > height − 140px | y ≤ height − 140px 立即隐 |
+| 鼠标光标 | 显示 | 3s 不动则 `cursor-hidden` class |
+
+两边独立：用户瞄一眼进度只用把鼠标推到底部，TopBar 不会跟着冒出来；想看文件名只挪到顶部，进度条不会跟着出。
+
+**关键实现**（`useFullscreenReveal` hook in `App.tsx`）：
+
+- 非全屏：`topVisible = bottomVisible = true`，cursor 永久可见
+- 全屏 mount：初始 `false`（避免进入全屏先闪一下）
+- `mousemove` 监听器：每帧分别算 `nearTop / nearBottom`
+- TopBar 改用受外控的 `fullscreenTopVisible` prop（**不再** `if (fullscreen) return null`）
+- 底部容器在全屏时切到 `position: absolute; bottom: 0` + `transform: translateY(bottomVisible ? 0 : 110%)`，**transition 走 GPU 合成**（不是 display: none / opacity ramp，避免 reflow）；非全屏退回 flex 子项布局
+
+**经验教训**：
+- "auto-hide 整组 UI" 在媒体播放器场景下是反习惯的——VLC / PotPlayer / Windows Movies&TV 都是分区域 edge-reveal。UX 决策要看主流软件的成熟约定。
+- 滑入滑出**永远用 `transform: translateY`**，不用 `display: none ↔ block` 也不用 `height: 0 ↔ auto`——前两者会 reflow，translateY 是 compositor-only。
+- 全屏切换是高频状态转换，TopBar / ControlBar 这类长期 mount 的组件**不能内部 early return null**——隐藏靠样式而非卸载，重新出现没有"重挂载"成本，prop 受控逻辑也更清晰。
+
+### 6.28 首次视频加载瞬间桌面穿透 —— `force-window=yes + idle=yes` 让 mpv 子窗口永远在场
+
+**现象**：双击 mp4 启动 mplayer（或在空闲态拖入第一个文件）的瞬间，视频区会闪一下桌面/底层应用——用户原话"播放器自动打开加载视频的时候，会一瞬间播放区域能够看到软件下面的桌面"。
+
+**根因**：mpv 默认 `force-window=no`，**没文件就不创建 OS 子窗口**。整个启动流程是：
+
+1. Tauri 主窗口创建（transparent: true）
+2. mpv plugin init（仅 libmpv 实例，无子窗口）
+3. 用户拖入文件 → `loadfile` → mpv demux/decode → 拿到第一帧 → 创建子窗口 → 出图
+
+第 1~2 步之间的视频区是**纯透明穿透到桌面**（没 mpv 子窗口、没 DOM 占位）；第 3 步的"创建子窗口到第一帧"间还有几十到几百毫秒。这段时间用户就看到了桌面或底层窗口。
+
+§6.23 解决的是 PlaylistPanel 切换时的运行时漏光（用 DOM 始终占位 + mpv 填黑兜底），但启动期主区还是没 mpv 子窗口可填——DOM 那里是 PlayerView 的 idle overlay 不透明黑底，能盖住到 file-loaded 前；但 file-loaded 那一刹 idle overlay 被 fileLoaded → showOverlay=false 撤掉，**而 mpv 子窗口还在创建中**，那一两帧的窗口空缺就漏给桌面了。
+
+**修复**：mpv init options 加 `force-window=yes` + `idle=yes`。
+
+- `force-window=yes`：**没文件也创建子窗口**。Tauri 窗口出来的同时 mpv 子窗口就在那填黑（来自 §6.24 验证可行的 `background-color=#000000 + background=color`），整个生命周期里"主区有 mpv 子窗口"都是真的。
+- `idle=yes`：mpv 配合 force-window 用——播放完一个文件不退出 mpv 循环，待下个 `loadfile`，子窗口持续在。
+
+不能用 `force-window=immediate`：跟 background 选项组合会让 init 死锁（§6.4 / §6.24 已验证）。`yes` 是"载入第一个 file 时若没有视频/封面才创建空窗口"，跟我们要的"启动就创建"等价但不死锁。
+
+**经验教训**：
+- 早期 §6.21 / §6.23 已经梳理过"透明窗下任何视频区都必须有 DOM 占位 OR mpv 子窗口填充"的铁律，但**子窗口创建时刻** 这个边界条件被忽视了。把"子窗口存在性"从"loadfile 之后"提前到"plugin init 之后"，就消除了所有"加载瞬间穿透"场景。
+- mpv idle / force-window 不只是"无文件时显示什么"的问题，而是"OS 子窗口存在与否"的开关。Tauri 透明窗这种依赖子窗口当遮罩的方案下，这俩选项几乎是必开的。
+
 ---
 
 ## 7. 性能 / UX 考量
@@ -655,7 +800,9 @@ mpv 0.40 把选项重命名了：旧 `--background` → `--background-color`（�
 ### 7.3 mpv 嵌入相关
 - **状态驱动 video-margin-ratio**：从 `playlistCollapsed / showWaveform / fullscreen` 直接算 margin，不用 ResizeObserver；常量 `CONTROL=60 / WAVEFORM=56`，`PLAYLIST` 跟随 `settings.playlistWidth`（200–600 用户可拖动）
 - **PlaylistPanel 始终挂载 + `transform: translateX` 滑入滑出**：放弃了早期的"延迟 80ms mount"和"过渡 guard 占位"两条补漏路径，根治方案是消除"DOM 缺席瞬态"本身。`position: absolute right-0 top-0 bottom-0` 脱离 flex 布局，`transform: translateX(0)` 显示、`translateX(width)` 滑出屏外；transition 220ms cubic-bezier，纯合成器动画；resizing 时关 transition 避免拖宽度卡顿。详见 §6.23
-- **mpv 启动选项 `background-color=#000000 + background=color`**：让 video-margin-ratio 让出的区域用纯黑帧填充而不是透明。即使 PlaylistPanel 滑动过程 mpv margin 还没及时同步，露出区域也是黑色不是桌面。这是 §6.23 漏光修复的双重保险之一
+- **mpv 启动选项 `background-color=#000000 + background=color + force-window=yes + idle=yes`**：
+  - `background-color + background=color`：让 video-margin-ratio 让出的区域用纯黑帧填充而不是透明。即使 PlaylistPanel 滑动过程 mpv margin 还没及时同步，露出区域也是黑色不是桌面（§6.23 漏光修复的双重保险之一）
+  - `force-window=yes + idle=yes`：**没文件也创建子窗口并保持存在**。Tauri 窗口出来的同时 mpv 子窗口就在那填黑，整个生命周期"主区永远有 mpv 子窗口"——消除"从启动到首次 file-loaded"之间的桌面穿透闪烁（详见 §6.28）。注意不能用 `force-window=immediate`，跟 background 组合死锁（§6.4 / §6.24）
 - **未 fullscreen 时 video-margin-ratio = `{ right: playlistWidth/w, bottom: (60+56)/h }`**（关闭波形条则 `bottom: 60/h`；playlist 折叠时 `right: 0`）：mpv 完全不在 UI 区域渲染，节省 GPU 也保证 UI 不被覆盖
 
 ### 7.4 波形管线
@@ -672,6 +819,7 @@ mpv 0.40 把选项重命名了：旧 `--background` → `--background-color`（�
   3. `styles.css` html/body `background: transparent !important`（带警告注释，防止以后被人改回）
   4. `App.tsx` 首挂载后双 `requestAnimationFrame`：第一帧后 `window.show()` 让窗口可见（用户看到 boot-bg 黑底），第二帧后 `document.getElementById("boot-bg")?.remove()` 撤掉占位（露出 PlayerView idle overlay 同色黑底）。整个过渡视觉上是黑→黑→黑，零白闪
   5. Rust setup 起独立线程 1.5s 后无条件 `window.show()` 兜底——即使前端阻塞，用户看到的也是 boot-bg 黑色，不会是透明窗穿透到桌面
+  6. **mpv 子窗口在 init 时就创建**（`force-window=yes + idle=yes`）：从用户视觉上 mpv 子窗口跟 Tauri 窗口"同时出生"，全程填黑帧；之后无论怎样 loadfile / 切歌 / 加载首个视频，子窗口都不会再"消失重建"，根除了 §6.28 描述的首次加载瞬间穿透
 - **PlaylistPanel slide-in / SettingsPanel & GotoFrameDialog fade+scale / ErrorToast slide-down**：每个生灭都过 ~150ms 缓动，消除"突然冒出来"的硬切感
 - **拖文件入窗口的 DragHoverOverlay**：onDragDropEvent enter/over/leave 全套监听，全屏虚线框 + Download 图标 + 提示文案，比传统 web 拖拽 UX 强很多
 - **GotoFrameDialog 双模式自适应**：有 fps → 帧号；无 fps（纯音频）→ mm:ss / hh:mm:ss 时间输入
@@ -679,6 +827,18 @@ mpv 0.40 把选项重命名了：旧 `--background` → `--background-color`（�
 ### 7.6 单实例与启动参数
 - **`tauri-plugin-single-instance`**：第二个 mplayer.exe 启动时把 argv 转发到已有窗口，`unminimize + set_focus + emit("open-files")`，避免重复加载 94MB libmpv
 - **`std::mem::take` 消费 launch args**：`get_launch_args` 调一次就清空，HMR / 重渲染重复 invoke 不会重复入队同一文件
+
+### 7.8 全屏 UX
+
+- **顶/底独立 edge-reveal**（`useFullscreenReveal` in App.tsx）：鼠标接近顶部 80px 显示 TopBar，接近底部 140px 显示 WaveformStrip + ControlBar，离开立即隐藏。两侧独立——看进度时 TopBar 不会跟着冒出来打扰，反之亦然
+- **底部容器全屏切布局**：非全屏走 flex 占位；全屏改 `position: absolute; bottom: 0` + `transform: translateY(110%)` 滑入滑出，纯合成器层动画 220ms cubic-bezier；TopBar 同样靠 `fullscreenTopVisible` prop 切显示而非卸载（避免重挂载）
+- **鼠标 3s 静止隐藏光标**：`document.body.classList.add('cursor-hidden')`，跟控件 reveal 解耦——光标隐了控件依然可触发；切换非全屏时强制清掉这个 class
+
+### 7.9 字幕
+
+- **drop-zone 按扩展分流**：PlayerView 的 `onDragDropEvent('drop')` 用 `classifyDrops` 把 8 种字幕扩展（srt / ass / ssa / sub / vtt / idx / smi / sup）分到 `addSubtitle()`，其余走 `appendToPlaylist`。字幕需要已有当前播放（`currentIndex ≥ 0`）才入通道，否则丢弃
+- **TrackMenu 扩展项**（仅 sub 类型）：分隔线下追加「加载字幕文件…」（plugin-dialog filter 同 8 种扩展）+ 字幕延迟 −100ms / +100ms / 重置 0。延迟显示等宽数字 `tabular-nums`，避免抖动
+- **菜单打开时拉一次 `sub-delay`**：保证 ±100ms 操作以 mpv 真实值为起点，而不是本地 stale 值
 
 ### 7.7 文件句柄与优雅关闭
 
@@ -705,8 +865,8 @@ mpv 0.40 把选项重命名了：旧 `--background` → `--background-color`（�
 
 | 关心什么 | 看哪个文件 |
 |---|---|
-| mpv 怎么 init / 怎么收 event | `src/hooks/useMpv.ts` |
-| mpv 命令封装（带 `forcePlayheadSnap`） | `src/lib/mpv.ts` |
+| mpv 怎么 init / 怎么收 event / 1Hz fallback poll | `src/hooks/useMpv.ts` |
+| mpv 命令封装（含 `addSubtitle` / `setSubDelay` / `stopPlayback` / `forcePlayheadSnap`） | `src/lib/mpv.ts` |
 | 虚拟播放头单例（cursor rAF） | `src/hooks/useCursorAnimation.ts` |
 | 全局快捷键派发 | `src/components/KeyboardShortcuts.tsx` |
 | 快捷键定义 / 默认值 / 工具 | `src/lib/shortcuts.ts` |
@@ -716,6 +876,11 @@ mpv 0.40 把选项重命名了：旧 `--background` → `--background-color`（�
 | 波形 Rust 端解码 | `src-tauri/src/peaks.rs` |
 | mpv 视频区裁切 | `src/hooks/useVideoMargins.ts` |
 | PlaylistPanel transform 滑入滑出 | `src/components/PlaylistPanel.tsx` |
+| PlaylistItem 右键菜单 Portal | `src/components/PlaylistItem.tsx` |
+| ControlBar（音量百分比 / Ctrl+点击重置 / 波形 toggle） | `src/components/ControlBar.tsx` |
+| TrackMenu（音轨 / 字幕轨 / 加载外部字幕 / 字幕延迟） | `src/components/TrackMenu.tsx` |
+| PlayerView（drop 分流字幕 vs 媒体） | `src/components/PlayerView.tsx` |
+| 全屏 edge-reveal hook（顶/底独立带） | `src/App.tsx` (`useFullscreenReveal`) |
 | 冷启动黑底占位 | `index.html` (`#boot-bg`) |
 | 启动入口 | `start-dev.ps1` / `start-dev.bat` |
 | DLL 复制逻辑 | `src-tauri/build.rs` |
