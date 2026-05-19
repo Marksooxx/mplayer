@@ -109,9 +109,14 @@ function App() {
   useGracefulShutdown();
   useAlwaysOnTop();
 
-  // 首帧渲染后再让 Tauri 显示窗口，避免冷启动期间的白底闪烁。
-  // tauri.conf.json 已设 visible: false。
-  // 即使本路径失败，Rust setup 也会在 1.5s 后兜底 show()，保证窗口一定出现。
+  // 启动序列（防白闪 + 防透明窗）：
+  //   1. tauri.conf.json visible: false → 窗口创建后不可见
+  //   2. index.html 静态 #boot-bg 黑底盖住一切（z-index: 9999）
+  //   3. React 完成首帧绘制（PlayerView idle overlay 已上屏）后：
+  //      → window.show() 显示窗口 → 用户看到 #boot-bg 黑色
+  //      → 再下一帧移除 #boot-bg → 露出 PlayerView idle overlay（同色黑底）
+  //   过渡完全无感：黑 → 黑 → 黑。
+  //   Rust setup 1.5s failsafe 兜底 show()，即使前端阻塞，用户也只看到黑底。
   useEffect(() => {
     let cancelled = false;
     requestAnimationFrame(() => {
@@ -120,6 +125,10 @@ function App() {
         getCurrentWindow()
           .show()
           .catch((err) => console.error("[startup] window.show failed", err));
+        // 再推一帧，确保 PlayerView 已经 paint，再撤掉占位
+        requestAnimationFrame(() => {
+          document.getElementById("boot-bg")?.remove();
+        });
       });
     });
     return () => {

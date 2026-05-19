@@ -3,19 +3,40 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      color-scheme: dark 让 WebView2 默认背景从白色变成黑色。
+      关键防御场景：
+        - playlist 折叠→展开过渡的 80ms 间隙，右侧 280px 区域瞬态露出底色
+        - 全屏切换、窗口 resize 等任意时刻 WebView2 内部短暂重绘
+      没有这一行，所有这些瞬态都会"闪白"。
+    -->
+    <meta name="color-scheme" content="dark" />
     <title>mplayer</title>
     <!--
-      ⚠️ 这里**不要**给 html/body 染色 —— mpv 在 Win32 z-order 中位于
-      WebView2 之下，视频通过 body 的"透明"显示出来。任何不透明背景
-      都会让视频区全黑。
-      冷启动白底闪烁靠 tauri.conf.json `visible:false` + React 首帧后
-      `getCurrentWindow().show()` 防御（详见 App.tsx）。
+      ⚠️ html/body 必须 transparent —— mpv 在 Win32 z-order 中位于 WebView2 之下，
+      视频通过 body 的"透明"显示出来。任何不透明背景都会让视频区全黑。
+
+      #boot-bg 是冷启动黑底防线：
+        - 静态 HTML，浏览器 parse 阶段就出现在 DOM 中
+        - z-index: 9999 盖住一切（含 PlayerView idle overlay）
+        - tauri.conf.json visible:false + Rust 1.5s failsafe 触发 window.show()
+          时，即使 React 还没首帧绘制完，用户看到的也是 #boot-bg 的黑底，
+          不会是 WebView2 默认背景（可能露出桌面/白闪）
+        - App.tsx 在 React 首帧绘制完成后双 rAF 移除它
     -->
     <style>
       html, body { margin: 0; padding: 0; background: transparent; color: #e5e7eb; }
+      #boot-bg {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: #0a0a0a; /* neutral-950，与 PlayerView idle overlay 一致 */
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
+    <div id="boot-bg"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

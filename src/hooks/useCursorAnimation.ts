@@ -1,95 +1,145 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { usePlayerStore } from "../store/playerStore";
 
 /**
- * 进度光标的虚拟播放头（virtual playhead）。
+ * 全局虚拟播放头(virtual playhead) —— 模块级单例。
  *
- * ★ 为什么不再读 mpv 的 time-pos ★
+ * ★ 为什么必须单例 ★
  *
- * mpv 在 30fps 视频下每 ~33ms 发一次 `time-pos` 事件，且经 Tauri IPC 后有
- * ~10-20ms 延迟。如果每次事件都"snap"插值参考点：
- *   - 新 `position` 比我们之前外推的位置领先 IPC 延迟那么一截
- *   - 这种 forward snap 在播放中被持续运动掩盖看不出
- *   - 但**暂停瞬间**：mpv 先发"最终 time-pos"、再发 pause；我们冻结的
- *     `lastExtrapolated` 刚被最后那次 snap 推到前面，于是 cursor 就向前
- *     瞬移一小段，肉眼可见，尤其在 144Hz 屏上
+ * 旧实现把 displayed / lastTickTime 等放在 hook 内的局部变量,且 useEffect
+ * 依赖 [ref, updater]。父组件(如 ControlBar)在 mpv 每 ~33ms 一次的
+ * time-pos 事件下重渲染,子组件 ProgressFill/Thumb 也重渲染 → 传入的
+ * inline updater 引用变 → useEffect cleanup + 重 setup → displayed 被
+ * 重置为 s.position。表现:暂停瞬间 cursor "瞬移"到 mpv 报的最后位置;
+ * 播放中持续微抖(每次 reset 都对齐到 mpv 离散值,丢失 dt 累加的连续性)。
  *
- * ★ 改成虚拟播放头 ★
+ * 单例模式:整个 app 只有一个 rAF tick 推进 displayed,无论多少 cursor
+ * 订阅,所有订阅者绝对同步。父组件重渲染不会触动模块级状态。
  *
- * 每帧 `displayed += dt × speed`，完全无视 mpv 报的小幅 position 变化；
- * 只在差距 > 0.3 秒时认为是真正的 seek 才 snap。pause 不再读 raw position，
- * dt 累加自然停下，cursor 在视觉上一直所在的位置定格——零瞬移。
+ * ★ 暂停瞬移修复 ★
  *
- * 副作用极小：长时间播放时若 dt 累加与 mpv 内部时钟有微小漂移，最多
- * 几十毫秒；用户只在 seek 或文件切换时才能看到 cursor 重新对齐，正常播放
- * 中视觉上几乎完美连续。
+ * 从 playing → pausing 转换的瞬间,mpv 还会发出最后几次 time-pos 事件
+ * (buffered frames + IPC 延迟),它们的值比 dt 累加的 displayed 略前。
+ * 这些事件如果触发 snap,cursor 会向前"跳"几十毫秒。
+ *
+ * 方案:暂停转换瞬间启动 PAUSE_FREEZE_MS 冻结窗,期间忽略所有 mpv
+ * position 更新。窗口结束后:
+ *   - 播放时 diff > 300ms 才认为是用户主动 seek
+ *   - 暂停时 diff > 5ms 即 snap(让 Ctrl+←/→ 单帧步进 ~33ms 有视觉反馈)
  */
+type PlayheadCb = (displayed: number, progress: number) => void;
+
+const subscribers = new Set<PlayheadCb>();
+let rafId = 0;
+
+let displayed: number | null = null;
+let lastTickTime = 0;
+let lastSeenPosition = -Infinity;
+let wasPlaying = false;
+let pauseFreezeUntil = 0;
+
+const SEEK_THRESHOLD_PLAYING = 0.3; // 播放时 >300ms 才认为是 seek
+const SEEK_THRESHOLD_PAUSED = 0.005; // 暂停时 >5ms 即 snap(单帧 ~33ms 触发)
+const PAUSE_FREEZE_MS = 280; // playing → pausing 冻结窗(吸收 mpv 最后几次 time-pos)
+
+function tick(): void {
+  const s = usePlayerStore.getState();
+  const now = performance.now();
+
+  if (s.dragPosition !== null) {
+    displayed = s.dragPosition;
+    lastSeenPosition = s.position;
+    lastTickTime = now;
+    wasPlaying = s.isPlaying;
+    pauseFreezeUntil = 0;
+  } else if (displayed === null || now - lastTickTime > 1000) {
+    // 首次或长时间停滞(tab 后台/睡眠):用 mpv 当前 position 作为起点
+    displayed = s.position;
+    lastSeenPosition = s.position;
+    lastTickTime = now;
+    pauseFreezeUntil = 0;
+    wasPlaying = s.isPlaying;
+  } else {
+    const dt = (now - lastTickTime) / 1000;
+    lastTickTime = now;
+
+    // 从 playing 转 pausing 的那一帧:启动冻结窗
+    if (wasPlaying && !s.isPlaying) {
+      pauseFreezeUntil = now + PAUSE_FREEZE_MS;
+    }
+    const inPauseFreeze = !s.isPlaying && now < pauseFreezeUntil;
+
+    if (!inPauseFreeze && s.position !== lastSeenPosition) {
+      const diff = s.position - displayed;
+      const threshold = s.isPlaying ? SEEK_THRESHOLD_PLAYING : SEEK_THRESHOLD_PAUSED;
+      if (Math.abs(diff) > threshold) {
+        displayed = s.position;
+      }
+      lastSeenPosition = s.position;
+    }
+
+    if (s.isPlaying) {
+      displayed += dt * s.speed;
+      if (s.duration > 0 && displayed > s.duration) displayed = s.duration;
+      if (displayed < 0) displayed = 0;
+    }
+    wasPlaying = s.isPlaying;
+  }
+
+  const dispVal = displayed ?? 0;
+  const progress =
+    s.duration > 0 ? Math.max(0, Math.min(1, dispVal / s.duration)) : 0;
+
+  for (const cb of subscribers) {
+    cb(dispVal, progress);
+  }
+
+  rafId = requestAnimationFrame(tick);
+}
+
+function ensureTicking(): void {
+  if (rafId === 0) {
+    rafId = requestAnimationFrame(tick);
+  }
+}
+
+function stopIfNoSubscribers(): void {
+  if (subscribers.size === 0 && rafId !== 0) {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+    displayed = null;
+    lastSeenPosition = -Infinity;
+    wasPlaying = false;
+    pauseFreezeUntil = 0;
+  }
+}
+
+/**
+ * 通用订阅。callback 接收(displayed seconds, progress 0-1)。
+ * 整个 app 共享同一个 rAF tick,所有订阅者每帧同步。
+ */
+export function useVirtualPlayhead(cb: PlayheadCb): void {
+  const cbRef = useRef(cb);
+  cbRef.current = cb;
+
+  useEffect(() => {
+    const wrapped: PlayheadCb = (d, p) => cbRef.current(d, p);
+    subscribers.add(wrapped);
+    ensureTicking();
+    return () => {
+      subscribers.delete(wrapped);
+      stopIfNoSubscribers();
+    };
+  }, []);
+}
+
+/** 便捷封装:把 progress(0-1) 写入指定 element 的 callback */
 export function useCursorAnimation(
   ref: RefObject<HTMLElement | null>,
   updater: (el: HTMLElement, progress: number) => void,
 ): void {
-  useEffect(() => {
-    let raf = 0;
-
-    // 虚拟播放头：我们自己维护的"当前位置"，不直接读 mpv
-    let displayed: number | null = null;
-    let lastTickTime = 0;
-    let lastSeenPosition = -Infinity;
-
-    // > 这个差距判定为 seek，需要 snap 到 mpv 报的新位置（单位：秒）
-    const SEEK_THRESHOLD = 0.3;
-
-    const tick = () => {
-      const s = usePlayerStore.getState();
-      const now = performance.now();
-
-      // 拖动：直接 snap 到鼠标位置
-      if (s.dragPosition !== null) {
-        displayed = s.dragPosition;
-        lastSeenPosition = s.position;
-        lastTickTime = now;
-      } else {
-        // 第一次或长时间停滞（>1s，可能 tab 后台过）→ 初始化
-        if (displayed === null || now - lastTickTime > 1000) {
-          displayed = s.position;
-          lastSeenPosition = s.position;
-          lastTickTime = now;
-        } else {
-          const dt = (now - lastTickTime) / 1000;
-          lastTickTime = now;
-
-          // 检测 seek：mpv 报的 position 跟我们的 displayed 差距过大
-          if (s.position !== lastSeenPosition) {
-            const diff = s.position - displayed;
-            if (Math.abs(diff) > SEEK_THRESHOLD) {
-              // seek（或文件切换、单帧 step 之类大幅跳变）→ snap
-              displayed = s.position;
-            }
-            // 小幅差距：忽略，相信我们自己的 dt 累加，避免 IPC 抖动
-            lastSeenPosition = s.position;
-          }
-
-          // 播放：dt 累加；暂停：不累加（自然冻结）
-          if (s.isPlaying) {
-            displayed += dt * s.speed;
-            if (s.duration > 0 && displayed > s.duration) displayed = s.duration;
-            if (displayed < 0) displayed = 0;
-          }
-        }
-      }
-
-      const progress =
-        s.duration > 0
-          ? Math.max(0, Math.min(1, displayed / s.duration))
-          : 0;
-
-      const el = ref.current;
-      if (el) updater(el, progress);
-
-      raf = requestAnimationFrame(tick);
-    };
-
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [ref, updater]);
+  useVirtualPlayhead((_d, p) => {
+    const el = ref.current;
+    if (el) updater(el, p);
+  });
 }

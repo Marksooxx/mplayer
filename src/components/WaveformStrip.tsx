@@ -4,7 +4,10 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import WaveSurfer from "wavesurfer.js";
 import { usePlayerStore } from "../store/playerStore";
 import { seekAbsolute } from "../lib/mpv";
-import { useCursorAnimation } from "../hooks/useCursorAnimation";
+import {
+  useCursorAnimation,
+  useVirtualPlayhead,
+} from "../hooks/useCursorAnimation";
 
 /** 波形上的播放光标。rAF 驱动 left:%，与 ControlBar 进度条同源同步、丝滑 */
 function WaveformCursor() {
@@ -67,17 +70,18 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
   const playlist = usePlayerStore((s) => s.playlist);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
   const fileLoaded = usePlayerStore((s) => s.fileLoaded);
-  const position = usePlayerStore((s) => s.position);
   const duration = usePlayerStore((s) => s.duration);
-  // 用户正在拖动进度条时，光标立即跟随目标位置；松手后清空，回归 mpv 真实进度。
-  const dragPosition = usePlayerStore((s) => s.dragPosition);
-  const displayPosition = dragPosition ?? position;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [peakDuration, setPeakDuration] = useState(0);
+
+  // rAF tick 通过 ref 读最新 duration，避免 effect 依赖 duration/peakDuration
+  // 而频繁解绑重订阅（失去虚拟播放头的稳定状态）
+  const durationRef = useRef(0);
+  durationRef.current = duration > 0 ? duration : peakDuration;
 
   const item = currentIndex >= 0 ? playlist[currentIndex] : null;
   const path = item?.path;
@@ -157,18 +161,21 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
     };
   }, [path, height, samplesPerPixel]);
 
-  // 同步 mpv 进度到 wavesurfer 光标 + 进度填色
-  useEffect(() => {
+  // 用单例虚拟播放头驱动 wavesurfer 内部光标 + progressColor 填色 —— 跟
+  // ProgressFill/Thumb 完全同帧（144Hz 屏上 ~144 次/秒），消除"波形光标比
+  // 进度条慢"的视觉违和。旧实现走 React useEffect ← position state，受
+  // mpv time-pos 30Hz 上限制约，肉眼能感受到帧率低。
+  useVirtualPlayhead((displayed) => {
     const ws = wsRef.current;
     if (!ws) return;
-    const dur = duration > 0 ? duration : peakDuration;
+    const dur = durationRef.current;
     if (dur <= 0) return;
     try {
-      ws.setTime(Math.max(0, Math.min(displayPosition, dur)));
+      ws.setTime(Math.max(0, Math.min(displayed, dur)));
     } catch {
       /* swallow setTime errors when media not ready */
     }
-  }, [displayPosition, duration, peakDuration]);
+  });
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
