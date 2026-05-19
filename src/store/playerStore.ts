@@ -5,6 +5,8 @@ export interface PlaylistItem {
   id: string;
   path: string;
   name: string;
+  /** 添加时的单调递增序号；用于"默认（添加顺序）"排序的恢复点。 */
+  seq: number;
 }
 
 export interface TrackInfo {
@@ -80,9 +82,14 @@ interface PlayerState {
 }
 
 let idCounter = 0;
+let seqCounter = 0;
 function nextId(): string {
   idCounter += 1;
   return `${Date.now().toString(36)}-${idCounter}`;
+}
+function nextSeq(): number {
+  seqCounter += 1;
+  return seqCounter;
 }
 
 export const usePlayerStore = create<PlayerState>((set) => ({
@@ -138,7 +145,12 @@ export const usePlayerStore = create<PlayerState>((set) => ({
         : {}),
     })),
   appendToPlaylist: (paths) => {
-    const newItems = paths.map((p) => ({ id: nextId(), path: p, name: basename(p) }));
+    const newItems = paths.map((p) => ({
+      id: nextId(),
+      seq: nextSeq(),
+      path: p,
+      name: basename(p),
+    }));
     let result: PlaylistItem[] = [];
     set((s) => {
       result = [...s.playlist, ...newItems];

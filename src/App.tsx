@@ -136,6 +136,15 @@ function App() {
     };
   }, []);
 
+  // desktop 软件:屏蔽 WebView2 默认右键菜单(刷新/检查/前进后退等)。
+  // 各组件自己的 onContextMenu handler 不受影响——preventDefault 只阻止
+  // 默认 action,不停事件传播,合成事件仍然正常派发。
+  useEffect(() => {
+    const block = (e: Event) => e.preventDefault();
+    window.addEventListener("contextmenu", block, { capture: true });
+    return () => window.removeEventListener("contextmenu", block, { capture: true });
+  }, []);
+
   const fullscreen = usePlayerStore((s) => s.fullscreen);
   const setFullscreen = usePlayerStore((s) => s.setFullscreen);
   const showWaveform = useSettingsStore((s) => s.showWaveform);

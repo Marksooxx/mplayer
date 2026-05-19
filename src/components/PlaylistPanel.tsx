@@ -1,5 +1,14 @@
-import { useRef, useState } from "react";
-import { FolderOpen, Save, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ArrowDownAZ,
+  ArrowDownUp,
+  ArrowUpAZ,
+  FolderOpen,
+  FolderTree,
+  ListOrdered,
+  Save,
+  Trash2,
+} from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { usePlayerStore } from "../store/playerStore";
@@ -25,6 +34,30 @@ export function PlaylistPanel() {
 
   const [resizing, setResizing] = useState(false);
   const resizeRafRef = useRef<number | null>(null);
+
+  // Delete 键删除选中项(desktop 习惯):
+  // - 在 INPUT/TEXTAREA 内不处理(编辑文本时按 Delete 应删字符)
+  // - selectedIndex < 0 (无选中) 也不处理
+  // - 不依赖 settings.shortcuts 配置,这是 playlist 上下文相关固定键
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Delete") return;
+      const t = e.target;
+      if (t instanceof HTMLElement) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable) return;
+      }
+      const s = usePlayerStore.getState();
+      if (s.selectedIndex < 0) return;
+      const item = s.playlist[s.selectedIndex];
+      if (item) {
+        e.preventDefault();
+        s.removeFromPlaylist(item.id);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // ★ 不再 conditional return null ★
   // 之前 collapsed 时 unmount，配合 mpv setVideoMarginRatio 异步 IPC，会有
@@ -117,6 +150,41 @@ export function PlaylistPanel() {
     setPlaylist([]);
   };
 
+  // 排序操作:按 mode 重排 playlist 数组,然后用 item.id 找回 currentIndex,
+  // 避免打断当前播放。localeCompare numeric 让 "video2" < "video10"。
+  // "default" 按 item.seq(添加时分配的单调递增序号)升序——永远可以回到原始
+  // 添加顺序,即使用户已经多次排序/手动调整过。
+  type SortMode = "default" | "name-asc" | "name-desc" | "path-asc";
+  const [sortOpen, setSortOpen] = useState(false);
+  const handleSort = (mode: SortMode) => {
+    setSortOpen(false);
+    const s = usePlayerStore.getState();
+    if (s.playlist.length <= 1) return;
+    const currentId = s.currentIndex >= 0 ? s.playlist[s.currentIndex]?.id : null;
+    const list = [...s.playlist];
+    const cmpOpts = { numeric: true, sensitivity: "base" as const };
+    switch (mode) {
+      case "default":
+        list.sort((a, b) => a.seq - b.seq);
+        break;
+      case "name-asc":
+        list.sort((a, b) => a.name.localeCompare(b.name, "zh", cmpOpts));
+        break;
+      case "name-desc":
+        list.sort((a, b) => b.name.localeCompare(a.name, "zh", cmpOpts));
+        break;
+      case "path-asc":
+        list.sort((a, b) => a.path.localeCompare(b.path, "zh", cmpOpts));
+        break;
+    }
+    s.setPlaylist(list);
+    // 把 currentIndex 指回当前播放的同一 item(它现在在新位置)
+    if (currentId !== null) {
+      const newIdx = list.findIndex((it) => it.id === currentId);
+      if (newIdx >= 0) s.setCurrentIndex(newIdx);
+    }
+  };
+
   return (
     <aside
       className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-white/10 bg-neutral-950"
@@ -127,10 +195,12 @@ export function PlaylistPanel() {
         // resizing 时关闭 transition，避免拖动改变 width 跟 transform 联动卡顿
         transition: resizing ? "none" : "transform 220ms cubic-bezier(0.16, 1, 0.3, 1)",
         zIndex: 20,
-        // 关掉合成时的 hint，提高 144Hz 屏上的丝滑度
+        // 合成层 hint，提高 144Hz 屏上滑入滑出的丝滑度
         willChange: "transform",
-        // 容器隔离：自己的 layout/paint 不波及外层（光标 rAF 高频写 DOM 时受益）
-        contain: "layout paint",
+        // 注:之前加过 contain: layout paint,但 contain: paint 会让 aside 成为
+        // fixed 定位子元素的 containing block。结果 PlaylistItem 的右键 menu
+        // (position: fixed + left: e.clientX 相对 viewport) 被解释为相对 aside,
+        // menu 跑到屏外/被 paint 裁切完全不可见,表现为"右键没反应"。已移除。
       }}
       aria-hidden={collapsed}
     >
@@ -182,6 +252,62 @@ export function PlaylistPanel() {
         >
           <Trash2 size={14} />
         </button>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setSortOpen((v) => !v)}
+            disabled={playlist.length <= 1}
+            title="排序"
+            className="w-7 h-7 inline-flex items-center justify-center rounded text-white/55 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+          >
+            <ArrowDownUp size={14} />
+          </button>
+          {sortOpen && (
+            <>
+              {/* 透明 backdrop 点击关闭 */}
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setSortOpen(false)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setSortOpen(false);
+                }}
+              />
+              <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] py-1 rounded-md border border-white/10 bg-neutral-900 shadow-xl text-sm text-white/90 select-none">
+                <button
+                  type="button"
+                  className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+                  onClick={() => handleSort("default")}
+                  title="按添加顺序还原（永远可回到此状态）"
+                >
+                  <ListOrdered size={14} /> 默认（添加顺序）
+                </button>
+                <div className="my-1 border-t border-white/10" />
+                <button
+                  type="button"
+                  className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+                  onClick={() => handleSort("name-asc")}
+                >
+                  <ArrowDownAZ size={14} /> 按名称 A → Z
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+                  onClick={() => handleSort("name-desc")}
+                >
+                  <ArrowUpAZ size={14} /> 按名称 Z → A
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+                  onClick={() => handleSort("path-asc")}
+                >
+                  <FolderTree size={14} /> 按路径分组
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         {playlist.length === 0 ? (
