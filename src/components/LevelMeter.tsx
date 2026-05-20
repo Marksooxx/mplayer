@@ -77,9 +77,11 @@ function Row({ label, db }: { label: string; db: number }) {
 }
 
 function InfoColumn({ data }: { data: PeaksData }) {
+  // 紧贴左侧 dB 数字：pl-1（4px）、不用 border-l、不留 ml,
+  // 仅靠字体颜色淡化作为视觉分隔。
   return (
     <div
-      className="flex flex-col justify-center gap-0.5 pl-2 ml-1 border-l border-white/10 text-[10px] tabular-nums text-white/55 leading-none w-[60px]"
+      className="flex flex-col justify-center gap-0.5 pl-1 text-[10px] tabular-nums text-white/55 leading-none w-[58px]"
       title={`采样率 ${data.sampleRate} Hz\n位深 ${
         data.bitDepth == null ? "lossy (浮点解码)" : `${data.bitDepth}-bit`
       }\n声道 ${data.channels}`}

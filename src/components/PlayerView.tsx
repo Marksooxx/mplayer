@@ -81,6 +81,10 @@ export function PlayerView() {
             break;
           case "drop": {
             setDragHover(false);
+            // OS 拖拽完成时 OS focus 仍在源资源管理器,webview 失焦 → 全局
+            // keydown 监听收不到 Space/方向键等快捷键。主动 setFocus 把窗口
+            // 拉回前台,空格键立即响应,不用再点一下窗口。
+            void win.setFocus().catch(() => { /* ignore */ });
             const paths = event.payload.paths;
             if (paths.length === 0) return;
             // 字幕 vs 媒体 分类:字幕走 mpv sub-add(需要已有当前播放视频),

@@ -350,12 +350,13 @@ export function ControlBar() {
 
         <div className="flex-1" />
 
-        {/* Volume —— mute / 数字 / slider 全部紧贴,数字左侧留 4px 透气与 icon 分开 */}
+        {/* Volume —— mute → 数字 紧贴(数字 w-9 自带视觉空气),
+            数字 → slider 留 4px 空隙避免黏在一起 */}
         <div className="flex items-center">
           <IconBtn onClick={handleMuteToggle} label={muted ? "取消静音" : "静音"}>
             <VolumeIcon size={18} />
           </IconBtn>
-          <span className="text-xs tabular-nums text-white/70 w-9 text-right select-none ml-1">
+          <span className="text-xs tabular-nums text-white/70 w-9 text-right select-none mr-1">
             {muted ? 0 : displayVolume}%
           </span>
           <div
