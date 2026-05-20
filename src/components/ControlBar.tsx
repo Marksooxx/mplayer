@@ -97,7 +97,9 @@ function IconBtn({
       aria-label={label}
       title={label}
       className={`shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-        active ? "bg-primary-500/30 text-primary-200" : "text-white/85 hover:bg-white/10 hover:text-white"
+        active
+          ? "bg-primary-500/30 text-primary-200 hover:bg-primary-500/45 hover:text-primary-100"
+          : "text-white/85 hover:bg-white/10 hover:text-white"
       }`}
     >
       {children}

@@ -53,7 +53,7 @@ function formatBitDepth(bd: number | null): string {
 
 function Row({ label, db }: { label: string; db: number }) {
   return (
-    <div className="flex items-center gap-1.5 leading-none">
+    <div className="flex items-center gap-1 leading-none">
       <span className="text-[10px] font-medium text-white/50 w-3 text-center">
         {label}
       </span>
@@ -69,7 +69,8 @@ function Row({ label, db }: { label: string; db: number }) {
           }}
         />
       </div>
-      <span className="text-[10px] tabular-nums text-white/75 w-12 text-right">
+      {/* 数字左对齐 → 紧贴 bar 右边；w-12 仍然保留作为最小宽度防止右侧 InfoColumn 抖动 */}
+      <span className="text-[10px] tabular-nums text-white/75 w-12 text-left">
         {formatDb(db)}
       </span>
     </div>
