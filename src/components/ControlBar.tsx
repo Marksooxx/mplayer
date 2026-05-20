@@ -113,7 +113,7 @@ function PlayBtn({ playing, onClick, disabled }: { playing: boolean; onClick: ()
       disabled={disabled}
       aria-label={playing ? "暂停" : "播放"}
       title={playing ? "暂停" : "播放"}
-      className="shrink-0 inline-flex items-center justify-center w-11 h-11 rounded-full bg-primary-500 hover:bg-primary-400 text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors shadow-md"
+      className="shrink-0 inline-flex items-center justify-center w-11 h-11 rounded-full bg-primary-500 hover:bg-primary-400 hover:brightness-110 hover:shadow-lg hover:shadow-primary-500/40 active:brightness-90 active:scale-[0.96] text-white disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shadow-md"
     >
       {playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="translate-x-[1px]" />}
     </button>
@@ -348,7 +348,7 @@ export function ControlBar() {
             <VolumeIcon size={18} />
           </IconBtn>
           {/* 百分比数字放在 mute 和 slider 之间(原来在 slider 右,挪到左) */}
-          <span className="text-xs tabular-nums text-white/70 w-9 text-right select-none mr-0.5">
+          <span className="text-xs tabular-nums text-white/70 w-9 text-right select-none -mr-1">
             {muted ? 0 : displayVolume}%
           </span>
           <div

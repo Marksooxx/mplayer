@@ -21,6 +21,9 @@ pub struct PeaksData {
     pub duration: f64,
     pub sample_rate: u32,
     pub channels: u32,
+    /// 解码后样本的有效位数：PCM 系列（WAV/FLAC/ALAC/AIFF）填 16/24/32；
+    /// lossy 编码（MP3/AAC/Opus/Vorbis）通常 None，前端识别为"lossy / 不适用"。
+    pub bit_depth: Option<u32>,
     /// 整文件 L 声道绝对值峰值（0..~1, 浮点 PCM 偶尔 > 1）。
     /// 即使 mono 也填（== peak_overall），保持语义清晰。
     pub peak_l: f32,
@@ -79,6 +82,8 @@ fn calculate_peaks_sync(file_path: String, samples_per_pixel: u32) -> Result<Pea
         .map(|c| c.count() as u32)
         .unwrap_or(2)
         .max(1);
+    // bits_per_sample 在 lossy 容器里通常是 None，前端按 null 处理
+    let bit_depth = audio_track.codec_params.bits_per_sample;
     let track_id = audio_track.id;
     let codec_params = audio_track.codec_params.clone();
 
@@ -164,6 +169,7 @@ fn calculate_peaks_sync(file_path: String, samples_per_pixel: u32) -> Result<Pea
         duration,
         sample_rate,
         channels,
+        bit_depth,
         peak_l,
         peak_r: if channels >= 2 { Some(peak_r) } else { None },
         peak_overall,

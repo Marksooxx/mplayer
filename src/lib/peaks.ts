@@ -11,6 +11,8 @@ export interface PeaksData {
   duration: number;
   sampleRate: number;
   channels: number;
+  /** 解码后样本位深；lossy 编码（MP3/AAC/Opus/Vorbis）为 null */
+  bitDepth: number | null;
   peakL: number;
   peakR: number | null;
   peakOverall: number;
