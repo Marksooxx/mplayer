@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import WaveSurfer from "wavesurfer.js";
 import { usePlayerStore } from "../store/playerStore";
 import { seekAbsolute } from "../lib/mpv";
+import { getPeaks } from "../lib/peaks";
 import {
   useCursorAnimation,
   useVirtualPlayhead,
@@ -22,38 +23,6 @@ function WaveformCursor() {
       style={{ left: "0%" }}
     />
   );
-}
-
-interface PeaksData {
-  peaks: number[];
-  duration: number;
-  sampleRate: number;
-  channels: number;
-}
-
-// 简易 LRU peaks 缓存 (key = filePath::samplesPerPixel)
-const peaksCache = new Map<string, PeaksData>();
-const MAX_CACHE = 20;
-
-async function getPeaks(filePath: string, samplesPerPixel: number): Promise<PeaksData> {
-  const key = `${filePath}::${samplesPerPixel}`;
-  const cached = peaksCache.get(key);
-  if (cached) {
-    // LRU 触发：先删后插，保持插入顺序就是访问顺序
-    peaksCache.delete(key);
-    peaksCache.set(key, cached);
-    return cached;
-  }
-  const data = await invoke<PeaksData>("calculate_peaks", {
-    filePath,
-    samplesPerPixel,
-  });
-  if (peaksCache.size >= MAX_CACHE) {
-    const firstKey = peaksCache.keys().next().value;
-    if (firstKey !== undefined) peaksCache.delete(firstKey);
-  }
-  peaksCache.set(key, data);
-  return data;
 }
 
 interface Props {

@@ -37,6 +37,7 @@ import {
 import { playNext, playPrev } from "../hooks/useMpv";
 import { formatTime } from "../lib/format";
 import { TrackMenu } from "./TrackMenu";
+import { LevelMeter } from "./LevelMeter";
 import { useCursorAnimation } from "../hooks/useCursorAnimation";
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -332,9 +333,12 @@ export function ControlBar() {
           <SkipForward size={18} />
         </IconBtn>
 
-        <div className="text-xs text-white/70 tabular-nums w-[120px] text-center ml-2">
+        <div className="text-xs text-white/70 tabular-nums w-[100px] text-center ml-2">
           {formatTime(displayPos)} / {formatTime(duration)}
         </div>
+
+        {/* 时间右边：文件级 L/R 峰值（dBFS）。受 settings.showLevelMeter 控制。 */}
+        <LevelMeter />
 
         <div className="flex-1" />
 

@@ -21,6 +21,14 @@ pub struct PeaksData {
     pub duration: f64,
     pub sample_rate: u32,
     pub channels: u32,
+    /// 整文件 L 声道绝对值峰值（0..~1, 浮点 PCM 偶尔 > 1）。
+    /// 即使 mono 也填（== peak_overall），保持语义清晰。
+    pub peak_l: f32,
+    /// 整文件 R 声道绝对值峰值；mono 文件为 None。
+    /// 用 Option 而非 f32::NAN：serde_json 默认不允许 NaN/Inf 序列化。
+    pub peak_r: Option<f32>,
+    /// 所有声道汇总最大绝对值峰值。
+    pub peak_overall: f32,
 }
 
 #[tauri::command]
@@ -79,6 +87,10 @@ fn calculate_peaks_sync(file_path: String, samples_per_pixel: u32) -> Result<Pea
         .map_err(|e| app_error("E_PEAKS_DECODER", format!("make decoder failed: {}", e)))?;
 
     let mut all_samples: Vec<f32> = Vec::new();
+    // 整文件每声道 abs peak（线性 0..~1+）。在解码循环里顺便累计，避免另跑一遍。
+    let mut peak_l: f32 = 0.0;
+    let mut peak_r: f32 = 0.0;
+    let mut peak_overall: f32 = 0.0;
 
     loop {
         match format.next_packet() {
@@ -92,7 +104,23 @@ fn calculate_peaks_sync(file_path: String, samples_per_pixel: u32) -> Result<Pea
                         let capacity = audio_buf.capacity() as u64;
                         let mut sample_buf = SampleBuffer::<f32>::new(capacity, spec);
                         sample_buf.copy_interleaved_ref(audio_buf);
-                        all_samples.extend_from_slice(sample_buf.samples());
+                        let samples = sample_buf.samples();
+                        // interleaved layout：sample[i] 所属 channel = i % channels
+                        for (i, &s) in samples.iter().enumerate() {
+                            let abs = s.abs();
+                            if abs > peak_overall {
+                                peak_overall = abs;
+                            }
+                            let ch = (i as u32) % channels;
+                            if ch == 0 {
+                                if abs > peak_l {
+                                    peak_l = abs;
+                                }
+                            } else if ch == 1 && abs > peak_r {
+                                peak_r = abs;
+                            }
+                        }
+                        all_samples.extend_from_slice(samples);
                     }
                     Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
                     Err(_) => break,
@@ -136,5 +164,8 @@ fn calculate_peaks_sync(file_path: String, samples_per_pixel: u32) -> Result<Pea
         duration,
         sample_rate,
         channels,
+        peak_l,
+        peak_r: if channels >= 2 { Some(peak_r) } else { None },
+        peak_overall,
     })
 }

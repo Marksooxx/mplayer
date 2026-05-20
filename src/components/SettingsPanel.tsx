@@ -137,6 +137,8 @@ export function SettingsPanel() {
   const setTopBarHidden = useSettingsStore((s) => s.setTopBarHidden);
   const showWaveform = useSettingsStore((s) => s.showWaveform);
   const setShowWaveform = useSettingsStore((s) => s.setShowWaveform);
+  const showLevelMeter = useSettingsStore((s) => s.showLevelMeter);
+  const setShowLevelMeter = useSettingsStore((s) => s.setShowLevelMeter);
   const rememberPosition = useSettingsStore((s) => s.rememberPosition);
   const setRememberPosition = useSettingsStore((s) => s.setRememberPosition);
   const frameStepMultiplier = useSettingsStore((s) => s.frameStepMultiplier);
@@ -212,6 +214,12 @@ export function SettingsPanel() {
             description="ControlBar 上方常驻波形可视化；关闭后释放该区域空间"
             checked={showWaveform}
             onChange={(v) => setShowWaveform(v)}
+          />
+          <Toggle
+            label="显示 L/R 文件级峰值"
+            description="loadfile 后在 ControlBar 时间右边显示整文件 L/R 峰值（dBFS），颜色和 bar 直观判断削波风险。关闭后不再解码计算"
+            checked={showLevelMeter}
+            onChange={(v) => setShowLevelMeter(v)}
           />
 
           <div className="px-3 py-2 mt-2 text-xs text-white/40 uppercase tracking-wide">播放</div>

@@ -20,6 +20,7 @@ export interface UiSettings {
   topBarAutoHide: boolean;
   topBarHidden: boolean; // true = 永久隐藏顶栏
   showWaveform: boolean; // 底部波形条显隐
+  showLevelMeter: boolean; // ControlBar 时间右侧文件级 L/R 峰值显示
   rememberPosition: boolean; // 记忆每个文件上次播放位置
   frameStepMultiplier: number; // Shift+←/→ 多帧步进的帧数
   alwaysOnTop: boolean; // 窗口置顶
@@ -43,6 +44,7 @@ const defaults: UiSettings = {
   topBarAutoHide: true,
   topBarHidden: false,
   showWaveform: true,
+  showLevelMeter: true,
   rememberPosition: true,
   frameStepMultiplier: FRAME_STEP_DEFAULT,
   alwaysOnTop: false,
@@ -89,6 +91,7 @@ interface SettingsState extends UiSettings {
   setTopBarAutoHide: (v: boolean) => void;
   setTopBarHidden: (v: boolean) => void;
   setShowWaveform: (v: boolean) => void;
+  setShowLevelMeter: (v: boolean) => void;
   setRememberPosition: (v: boolean) => void;
   setFrameStepMultiplier: (v: number) => void;
   setAlwaysOnTop: (v: boolean) => void;
@@ -121,6 +124,7 @@ function stripUi(s: SettingsState): UiSettings {
     topBarAutoHide: s.topBarAutoHide,
     topBarHidden: s.topBarHidden,
     showWaveform: s.showWaveform,
+    showLevelMeter: s.showLevelMeter,
     rememberPosition: s.rememberPosition,
     frameStepMultiplier: s.frameStepMultiplier,
     alwaysOnTop: s.alwaysOnTop,
@@ -157,6 +161,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setShowWaveform: (v) => {
     set({ showWaveform: v });
     persistIfBootstrapped(get, { showWaveform: v });
+  },
+  setShowLevelMeter: (v) => {
+    set({ showLevelMeter: v });
+    persistIfBootstrapped(get, { showLevelMeter: v });
   },
   setRememberPosition: (v) => {
     set({ rememberPosition: v });
