@@ -106,6 +106,8 @@ function IconBtn({
 }
 
 function PlayBtn({ playing, onClick, disabled }: { playing: boolean; onClick: () => void; disabled?: boolean }) {
+  // 跟 IconBtn 同款 hover 反馈(透明底 → bg-white/10),但稍大、icon 主色突出,
+  // 保留"主操作按钮"的视觉锚点。
   return (
     <button
       type="button"
@@ -113,9 +115,9 @@ function PlayBtn({ playing, onClick, disabled }: { playing: boolean; onClick: ()
       disabled={disabled}
       aria-label={playing ? "暂停" : "播放"}
       title={playing ? "暂停" : "播放"}
-      className="shrink-0 inline-flex items-center justify-center w-11 h-11 rounded-full bg-primary-500 hover:bg-primary-400 hover:brightness-110 hover:shadow-lg hover:shadow-primary-500/40 active:brightness-90 active:scale-[0.96] text-white disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shadow-md"
+      className="shrink-0 inline-flex items-center justify-center w-11 h-11 rounded-md text-primary-300 hover:bg-white/10 hover:text-primary-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
     >
-      {playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="translate-x-[1px]" />}
+      {playing ? <Pause size={26} fill="currentColor" /> : <Play size={26} fill="currentColor" className="translate-x-[1px]" />}
     </button>
   );
 }
@@ -318,37 +320,42 @@ export function ControlBar() {
         )}
       </div>
 
-      <div className="flex items-center gap-1.5">
-        <IconBtn onClick={() => void playPrev()} label="上一首" disabled={!hasMedia}>
-          <SkipBack size={18} />
-        </IconBtn>
-        <IconBtn onClick={() => void frameBackStep()} label="单帧后退 (Ctrl+←)" disabled={!hasMedia}>
-          <ChevronFirst size={18} />
-        </IconBtn>
-        <PlayBtn playing={isPlaying} onClick={handlePlayPause} disabled={currentIndex < 0} />
-        <IconBtn onClick={() => void frameStep()} label="单帧前进 (Ctrl+→)" disabled={!hasMedia}>
-          <ChevronLast size={18} />
-        </IconBtn>
-        <IconBtn onClick={() => void playNext()} label="下一首" disabled={!hasMedia}>
-          <SkipForward size={18} />
-        </IconBtn>
-
-        <div className="text-xs text-white/70 tabular-nums w-[100px] text-center ml-2">
-          {formatTime(displayPos)} / {formatTime(duration)}
+      {/* 控件分组：组内 gap-0 紧贴,组与组之间 gap-3 透气。
+          视觉层级:播放控制 / 时间+Level / [flex-1] / 音量 / 速度+轨道 / 视图工具 */}
+      <div className="flex items-center gap-3">
+        {/* 播放控制组：上一首 / 帧后退 / 播放 / 帧前进 / 下一首 —— 紧贴 */}
+        <div className="flex items-center">
+          <IconBtn onClick={() => void playPrev()} label="上一首" disabled={!hasMedia}>
+            <SkipBack size={18} />
+          </IconBtn>
+          <IconBtn onClick={() => void frameBackStep()} label="单帧后退 (Ctrl+←)" disabled={!hasMedia}>
+            <ChevronFirst size={18} />
+          </IconBtn>
+          <PlayBtn playing={isPlaying} onClick={handlePlayPause} disabled={currentIndex < 0} />
+          <IconBtn onClick={() => void frameStep()} label="单帧前进 (Ctrl+→)" disabled={!hasMedia}>
+            <ChevronLast size={18} />
+          </IconBtn>
+          <IconBtn onClick={() => void playNext()} label="下一首" disabled={!hasMedia}>
+            <SkipForward size={18} />
+          </IconBtn>
         </div>
 
-        {/* 时间右边：文件级 L/R 峰值（dBFS）。受 settings.showLevelMeter 控制。 */}
-        <LevelMeter />
+        {/* 时间 + Level Meter 一组 */}
+        <div className="flex items-center gap-1">
+          <div className="text-xs text-white/70 tabular-nums w-[100px] text-center">
+            {formatTime(displayPos)} / {formatTime(duration)}
+          </div>
+          <LevelMeter />
+        </div>
 
         <div className="flex-1" />
 
-        {/* Volume */}
-        <div className="flex items-center gap-1">
+        {/* Volume —— mute / 数字 / slider 全部紧贴,数字左侧留 4px 透气与 icon 分开 */}
+        <div className="flex items-center">
           <IconBtn onClick={handleMuteToggle} label={muted ? "取消静音" : "静音"}>
             <VolumeIcon size={18} />
           </IconBtn>
-          {/* 百分比数字放在 mute 和 slider 之间(原来在 slider 右,挪到左) */}
-          <span className="text-xs tabular-nums text-white/70 w-9 text-right select-none -mr-1">
+          <span className="text-xs tabular-nums text-white/70 w-9 text-right select-none ml-1">
             {muted ? 0 : displayVolume}%
           </span>
           <div
@@ -379,89 +386,91 @@ export function ControlBar() {
           </div>
         </div>
 
-        {/* Speed */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setSpeedOpen((v) => !v)}
-            className="inline-flex items-center gap-1 h-9 px-2.5 rounded-md text-sm text-white/85 hover:bg-white/10 hover:text-white tabular-nums"
-            title="播放速度"
-          >
-            <Gauge size={16} />
-            {speed}x
-          </button>
-          {speedOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setSpeedOpen(false)} />
-              <div className="absolute bottom-full right-0 mb-2 z-50 min-w-[110px] py-1 rounded-md border border-white/10 bg-neutral-900 shadow-xl text-sm text-white/90">
-                {SPEED_OPTIONS.map((opt) => (
-                  <button
-                    key={opt}
-                    className={`w-full px-3 py-1.5 text-left hover:bg-white/10 tabular-nums ${speed === opt ? "text-primary-300" : ""}`}
-                    onClick={() => {
-                      void setSpeedProp(opt);
-                      setSpeedOpen(false);
-                    }}
-                  >
-                    {speed === opt ? "✓ " : "  "}{opt}x
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+        {/* 速度 + 音轨 + 字幕 一组：紧贴 */}
+        <div className="flex items-center">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setSpeedOpen((v) => !v)}
+              className="inline-flex items-center gap-1 h-9 px-2.5 rounded-md text-sm text-white/85 hover:bg-white/10 hover:text-white tabular-nums transition-colors"
+              title="播放速度"
+            >
+              <Gauge size={16} />
+              {speed}x
+            </button>
+            {speedOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setSpeedOpen(false)} />
+                <div className="absolute bottom-full right-0 mb-2 z-50 min-w-[110px] py-1 rounded-md border border-white/10 bg-neutral-900 shadow-xl text-sm text-white/90">
+                  {SPEED_OPTIONS.map((opt) => (
+                    <button
+                      key={opt}
+                      className={`w-full px-3 py-1.5 text-left hover:bg-white/10 tabular-nums ${speed === opt ? "text-primary-300" : ""}`}
+                      onClick={() => {
+                        void setSpeedProp(opt);
+                        setSpeedOpen(false);
+                      }}
+                    >
+                      {speed === opt ? "✓ " : "  "}{opt}x
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          <TrackMenu kind="audio" label="音轨" />
+          <TrackMenu kind="sub" label="字幕" />
         </div>
 
-        <TrackMenu kind="audio" label="音轨" />
-        <TrackMenu kind="sub" label="字幕" />
-
-        <div className="w-px h-6 bg-white/10 mx-1" />
-
-        <IconBtn
-          onClick={() => setShowWaveform(!showWaveform)}
-          label={showWaveform ? "隐藏底部波形条" : "显示底部波形条"}
-          active={showWaveform}
-        >
-          <AudioWaveform size={18} />
-        </IconBtn>
-        <IconBtn
-          onClick={togglePlaylist}
-          label={playlistCollapsed ? "显示播放列表" : "隐藏播放列表"}
-          active={!playlistCollapsed}
-        >
-          <ListMusic size={18} />
-        </IconBtn>
-        <IconBtn
-          onClick={cyclePlaybackMode}
-          label={
-            playbackMode === "loop-playlist"
-              ? "列表循环 (Ctrl+R 切换)"
-              : playbackMode === "loop-single"
-                ? "单曲循环 (Ctrl+R 切换)"
-                : "随机播放 (Ctrl+R 切换)"
-          }
-          active={playbackMode !== "loop-playlist"}
-        >
-          {playbackMode === "loop-playlist" ? (
-            <Repeat size={18} />
-          ) : playbackMode === "loop-single" ? (
-            <Repeat1 size={18} />
-          ) : (
-            <Shuffle size={18} />
-          )}
-        </IconBtn>
-        <IconBtn
-          onClick={toggleAlwaysOnTop}
-          label={alwaysOnTop ? "取消窗口置顶 (Ctrl+T)" : "窗口置顶 (Ctrl+T)"}
-          active={alwaysOnTop}
-        >
-          {alwaysOnTop ? <Pin size={18} /> : <PinOff size={18} />}
-        </IconBtn>
-        <IconBtn onClick={openSettings} label="设置">
-          <Settings size={18} />
-        </IconBtn>
-        <IconBtn onClick={handleFullscreen} label={fullscreen ? "退出全屏" : "全屏"}>
-          {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-        </IconBtn>
+        {/* 视图工具组：波形 / 列表 / 循环模式 / 置顶 / 设置 / 全屏 —— 紧贴 */}
+        <div className="flex items-center">
+          <IconBtn
+            onClick={() => setShowWaveform(!showWaveform)}
+            label={showWaveform ? "隐藏底部波形条" : "显示底部波形条"}
+            active={showWaveform}
+          >
+            <AudioWaveform size={18} />
+          </IconBtn>
+          <IconBtn
+            onClick={togglePlaylist}
+            label={playlistCollapsed ? "显示播放列表" : "隐藏播放列表"}
+            active={!playlistCollapsed}
+          >
+            <ListMusic size={18} />
+          </IconBtn>
+          <IconBtn
+            onClick={cyclePlaybackMode}
+            label={
+              playbackMode === "loop-playlist"
+                ? "列表循环 (Ctrl+R 切换)"
+                : playbackMode === "loop-single"
+                  ? "单曲循环 (Ctrl+R 切换)"
+                  : "随机播放 (Ctrl+R 切换)"
+            }
+            active={playbackMode !== "loop-playlist"}
+          >
+            {playbackMode === "loop-playlist" ? (
+              <Repeat size={18} />
+            ) : playbackMode === "loop-single" ? (
+              <Repeat1 size={18} />
+            ) : (
+              <Shuffle size={18} />
+            )}
+          </IconBtn>
+          <IconBtn
+            onClick={toggleAlwaysOnTop}
+            label={alwaysOnTop ? "取消窗口置顶 (Ctrl+T)" : "窗口置顶 (Ctrl+T)"}
+            active={alwaysOnTop}
+          >
+            {alwaysOnTop ? <Pin size={18} /> : <PinOff size={18} />}
+          </IconBtn>
+          <IconBtn onClick={openSettings} label="设置">
+            <Settings size={18} />
+          </IconBtn>
+          <IconBtn onClick={handleFullscreen} label={fullscreen ? "退出全屏" : "全屏"}>
+            {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+          </IconBtn>
+        </div>
       </div>
     </div>
   );
