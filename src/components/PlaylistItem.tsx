@@ -1,11 +1,33 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpToLine, FolderOpen, Play, Trash2 } from "lucide-react";
-import { MarqueeText } from "./MarqueeText";
+import { ArrowUpToLine, Ban, Copy, File, Folder, FolderOpen, Play, Trash2 } from "lucide-react";
 import { usePlayerStore, type PlaylistItem as PlaylistItemType } from "../store/playerStore";
 import { playIndex } from "../hooks/useMpv";
 import { stopPlayback } from "../lib/mpv";
 import { parentDir } from "../lib/format";
+import { isSupportedMedia } from "../lib/media-types";
+
+/** 复制到系统剪贴板：优先 async clipboard API，失败回退到隐藏 textarea + execCommand */
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    /* 某些环境 async clipboard 不可用，走 fallback */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  } catch (err) {
+    console.error("[playlist] copy path failed", err);
+  }
+}
 
 interface Props {
   item: PlaylistItemType;
@@ -23,9 +45,12 @@ export function PlaylistItem({ item, index }: Props) {
 
   const isCurrent = currentIndex === index;
   const isSelected = selectedIndex === index;
+  const supported = isSupportedMedia(item.path);
 
   const handleClick = () => setSelectedIndex(index);
   const handleDoubleClick = () => {
+    // 不支持的文件类型不进 mpv（双击无操作）；选中态仍可用于复制路径/移除
+    if (!supported) return;
     void playIndex(index);
   };
   const handleContext = (e: React.MouseEvent) => {
@@ -58,6 +83,18 @@ export function PlaylistItem({ item, index }: Props) {
     moveToTop(item.id);
     closeMenu();
   };
+  const handleCopyPath = () => {
+    void copyText(item.path);
+    closeMenu();
+  };
+  const handleCopyName = () => {
+    void copyText(item.name);
+    closeMenu();
+  };
+  const handleCopyDir = () => {
+    void copyText(parentDir(item.path));
+    closeMenu();
+  };
 
   const bgClass = isCurrent
     ? "bg-primary-500/30 border-l-2 border-primary-400"
@@ -82,9 +119,17 @@ export function PlaylistItem({ item, index }: Props) {
           >
             {isCurrent ? <Play size={12} fill="currentColor" /> : index + 1}
           </span>
-          <div className="flex-1 min-w-0 text-sm text-white/90">
-            <MarqueeText text={item.name} />
+          <div className={`flex-1 min-w-0 text-sm truncate ${supported ? "text-white/90" : "text-white/40"}`}>
+            {item.name}
           </div>
+          {!supported && (
+            <span
+              className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] text-amber-300/90 bg-amber-500/15 border border-amber-500/20"
+              title="不支持的文件类型，无法播放"
+            >
+              <Ban size={10} /> 不支持
+            </span>
+          )}
         </div>
         <div className="pl-6 text-[10px] text-white/30 truncate">{parentDir(item.path)}</div>
       </div>
@@ -116,6 +161,24 @@ export function PlaylistItem({ item, index }: Props) {
               onClick={openInFolder}
             >
               <FolderOpen size={14} /> 在文件夹中显示
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+              onClick={handleCopyName}
+            >
+              <File size={14} /> 复制文件名
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+              onClick={handleCopyPath}
+            >
+              <Copy size={14} /> 复制路径
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-white/10 flex items-center gap-2"
+              onClick={handleCopyDir}
+            >
+              <Folder size={14} /> 复制文件夹位置
             </button>
             <button
               className="w-full px-3 py-1.5 text-left hover:bg-red-500/30 text-red-300 flex items-center gap-2"

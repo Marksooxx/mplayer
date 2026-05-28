@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { usePlayerStore } from "../store/playerStore";
 import { playIndex } from "./useMpv";
+import { firstSupportedIndex } from "../lib/media-types";
 
 /**
  * 处理 Windows 关联/拖拽到 exe 启动场景:
@@ -42,12 +43,13 @@ export function useLaunchFiles(): void {
       const paths = [...buffer];
       buffer.clear();
       const s = usePlayerStore.getState();
-      // "立即播放"语义:清空旧列表,加入新文件,播第一个。
+      // "立即播放"语义:清空旧列表,加入新文件,播第一个可播放项。
+      // 不支持的文件(非视频/音频)照样进列表,只是被跳过不自动播放,
+      // PlaylistItem 标「不支持」展示。
       s.setPlaylist([]);
       const added = s.appendToPlaylist(paths);
-      if (added.length > 0) {
-        void playIndex(0);
-      }
+      const idx = firstSupportedIndex(added);
+      if (idx >= 0) void playIndex(idx);
     };
 
     const enqueue = (paths: string[]) => {

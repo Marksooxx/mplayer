@@ -4,17 +4,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayerStore } from "../store/playerStore";
 import { addSubtitle, setVolumeProp, togglePause } from "../lib/mpv";
 import { playIndex } from "../hooks/useMpv";
+import { firstSupportedIndex, isSubtitle } from "../lib/media-types";
 
-const SUBTITLE_EXTS = new Set([
-  "srt", "ass", "ssa", "sub", "vtt", "idx", "smi", "sup",
-]);
-
+// 字幕走 mpv sub-add；其它(含不支持的非媒体文件)都进 playlist —— 不支持的
+// 由 PlaylistItem 标「不支持」展示，不在这里拦截。
 function classifyDrops(paths: string[]): { subs: string[]; media: string[] } {
   const subs: string[] = [];
   const media: string[] = [];
   for (const p of paths) {
-    const ext = p.split(/[.]/).pop()?.toLowerCase() ?? "";
-    if (SUBTITLE_EXTS.has(ext)) subs.push(p);
+    if (isSubtitle(p)) subs.push(p);
     else media.push(p);
   }
   return { subs, media };
@@ -102,7 +100,9 @@ export function PlayerView() {
               const startEmpty = playlist.length === 0;
               const added = appendToPlaylist(media);
               if (startEmpty && added.length > 0) {
-                void playIndex(0);
+                // 从第一个可播放项开始，跳过开头的不支持文件
+                const idx = firstSupportedIndex(added);
+                if (idx >= 0) void playIndex(idx);
               }
             }
             break;

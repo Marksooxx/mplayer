@@ -30,36 +30,6 @@ button {
   cursor: pointer;
 }
 
-/* Marquee scroll for long filenames */
-@keyframes marquee-scroll {
-  0% {
-    transform: translateX(0);
-  }
-  10% {
-    transform: translateX(0);
-  }
-  90% {
-    transform: translateX(calc(-1 * var(--marquee-distance, 0px)));
-  }
-  100% {
-    transform: translateX(calc(-1 * var(--marquee-distance, 0px)));
-  }
-}
-
-.marquee-track {
-  display: inline-block;
-  white-space: nowrap;
-  will-change: transform;
-}
-
-.marquee-track.is-overflow {
-  animation: marquee-scroll var(--marquee-duration, 8s) linear infinite;
-}
-
-.marquee-container:hover .marquee-track.is-overflow {
-  animation-play-state: paused;
-}
-
 /* Auto-hide cursor in fullscreen idle */
 .cursor-hidden,
 .cursor-hidden * {

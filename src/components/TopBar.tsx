@@ -4,11 +4,11 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { usePlayerStore } from "../store/playerStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { playIndex } from "../hooks/useMpv";
-
-const VIDEO_EXTENSIONS = [
-  "mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "wmv", "ts", "mpg", "mpeg", "rmvb",
-];
-const AUDIO_EXTENSIONS = ["mp3", "flac", "wav", "ogg", "m4a", "aac", "wma", "opus"];
+import {
+  AUDIO_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  firstSupportedIndex,
+} from "../lib/media-types";
 
 const TRIGGER_HEIGHT = 60; // 鼠标进入顶部 60px 范围内触发显示
 const HIDE_DELAY = 2500; // 离开后 2.5 秒淡出
@@ -96,7 +96,8 @@ export function TopBar({ fullscreenTopVisible = true }: Props) {
     const startEmpty = playlist.length === 0;
     const added = appendToPlaylist(paths);
     if (startEmpty && added.length > 0) {
-      void playIndex(0);
+      const idx = firstSupportedIndex(added);
+      if (idx >= 0) void playIndex(idx);
     }
   };
 

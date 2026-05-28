@@ -37,13 +37,13 @@
     "resources": ["lib/**/*"],
     "fileAssociations": [
       {
-        "ext": ["mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "wmv", "ts", "mpg", "mpeg", "rmvb"],
+        "ext": ["mp4", "m4v", "mkv", "webm", "avi", "mov", "flv", "f4v", "wmv", "asf", "ts", "m2ts", "mts", "mpg", "mpeg", "m2v", "vob", "3gp", "3g2", "divx", "ogv", "ogm", "rm", "rmvb"],
         "name": "Video",
         "description": "Video media file",
         "role": "Viewer"
       },
       {
-        "ext": ["mp3", "flac", "wav", "ogg", "m4a", "aac", "wma", "opus"],
+        "ext": ["mp3", "flac", "wav", "wave", "ogg", "oga", "opus", "m4a", "m4b", "aac", "wma", "mka", "ac3", "eac3", "dts", "aiff", "aif", "ape", "alac", "amr"],
         "name": "Audio",
         "description": "Audio media file",
         "role": "Viewer"
