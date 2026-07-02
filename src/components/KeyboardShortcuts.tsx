@@ -114,6 +114,12 @@ function dispatch(
     case "cyclePlaybackMode":
       useSettingsStore.getState().cyclePlaybackMode();
       break;
+    case "timecodeOsd":
+      useSettingsStore.getState().toggleTimecodeOsd();
+      break;
+    case "syncDebug":
+      useSettingsStore.getState().toggleSyncDebug();
+      break;
   }
 }
 

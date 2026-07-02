@@ -139,6 +139,8 @@ export function SettingsPanel() {
   const setShowWaveform = useSettingsStore((s) => s.setShowWaveform);
   const showLevelMeter = useSettingsStore((s) => s.showLevelMeter);
   const setShowLevelMeter = useSettingsStore((s) => s.setShowLevelMeter);
+  const showTimecodeOsd = useSettingsStore((s) => s.showTimecodeOsd);
+  const setShowTimecodeOsd = useSettingsStore((s) => s.setShowTimecodeOsd);
   const rememberPosition = useSettingsStore((s) => s.rememberPosition);
   const setRememberPosition = useSettingsStore((s) => s.setRememberPosition);
   const frameStepMultiplier = useSettingsStore((s) => s.frameStepMultiplier);
@@ -220,6 +222,12 @@ export function SettingsPanel() {
             description="loadfile 后在 ControlBar 时间右边显示整文件 L/R 峰值（dBFS），颜色和 bar 直观判断削波风险。关闭后不再解码计算"
             checked={showLevelMeter}
             onChange={(v) => setShowLevelMeter(v)}
+          />
+          <Toggle
+            label="显示时间码 / 帧号 OSD"
+            description="视频区左上角常驻当前时间（毫秒精度）与帧号，帧级检查 / 对轨用；默认快捷键 T 随时切换"
+            checked={showTimecodeOsd}
+            onChange={(v) => setShowTimecodeOsd(v)}
           />
 
           <div className="px-3 py-2 mt-2 text-xs text-white/40 uppercase tracking-wide">播放</div>

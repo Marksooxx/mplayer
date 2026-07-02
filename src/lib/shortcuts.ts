@@ -15,6 +15,7 @@ export type ShortcutAction =
   | "frameJumpBack"
   | "frameJumpForward"
   | "gotoFrame"
+  | "timecodeOsd"
   | "volumeUp"
   | "volumeDown"
   | "mute"
@@ -23,7 +24,8 @@ export type ShortcutAction =
   | "alwaysOnTop"
   | "cyclePlaybackMode"
   | "prevTrack"
-  | "nextTrack";
+  | "nextTrack"
+  | "syncDebug";
 
 export const ACTION_ORDER: ShortcutAction[] = [
   "playPause",
@@ -34,6 +36,7 @@ export const ACTION_ORDER: ShortcutAction[] = [
   "frameJumpBack",
   "frameJumpForward",
   "gotoFrame",
+  "timecodeOsd",
   "volumeUp",
   "volumeDown",
   "mute",
@@ -43,6 +46,7 @@ export const ACTION_ORDER: ShortcutAction[] = [
   "cyclePlaybackMode",
   "prevTrack",
   "nextTrack",
+  "syncDebug",
 ];
 
 export const ACTION_LABELS: Record<ShortcutAction, string> = {
@@ -54,6 +58,7 @@ export const ACTION_LABELS: Record<ShortcutAction, string> = {
   frameJumpBack: "多帧后退（N 帧）",
   frameJumpForward: "多帧前进（N 帧）",
   gotoFrame: "跳转到指定帧",
+  timecodeOsd: "时间码 / 帧号 OSD 切换",
   volumeUp: "音量 +5",
   volumeDown: "音量 -5",
   mute: "静音切换",
@@ -63,6 +68,7 @@ export const ACTION_LABELS: Record<ShortcutAction, string> = {
   cyclePlaybackMode: "播放模式切换（列表/单曲/随机）",
   prevTrack: "上一个视频",
   nextTrack: "下一个视频",
+  syncDebug: "同步误差监视器（调试）",
 };
 
 export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
@@ -74,6 +80,7 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   frameJumpBack: "Shift+ArrowLeft",
   frameJumpForward: "Shift+ArrowRight",
   gotoFrame: "Ctrl+F",
+  timecodeOsd: "T",
   volumeUp: "ArrowUp",
   volumeDown: "ArrowDown",
   mute: "M",
@@ -83,6 +90,7 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
   cyclePlaybackMode: "Ctrl+R",
   prevTrack: "PageUp",
   nextTrack: "PageDown",
+  syncDebug: "Ctrl+Shift+D",
 };
 
 export const FRAME_STEP_MIN = 1;

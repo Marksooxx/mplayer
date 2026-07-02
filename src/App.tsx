@@ -9,6 +9,8 @@ import { KeyboardShortcuts } from "./components/KeyboardShortcuts";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { WaveformStrip } from "./components/WaveformStrip";
 import { GotoFrameDialog } from "./components/GotoFrameDialog";
+import { SyncDebugOverlay } from "./components/SyncDebugOverlay";
+import { TimecodeOsd } from "./components/TimecodeOsd";
 import { useMpv } from "./hooks/useMpv";
 import { useVideoMargins } from "./hooks/useVideoMargins";
 import { useLaunchFiles } from "./hooks/useLaunchFiles";
@@ -239,6 +241,8 @@ function App() {
       <SettingsPanel />
       <GotoFrameDialog />
       <DragHoverOverlay />
+      <TimecodeOsd />
+      <SyncDebugOverlay />
     </div>
   );
 }

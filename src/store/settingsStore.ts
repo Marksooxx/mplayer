@@ -13,7 +13,7 @@ import {
 } from "../lib/playback-mode";
 import { loadUiRaw, persistUi } from "../lib/persist";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export interface UiSettings {
   playlistCollapsed: boolean;
@@ -21,6 +21,7 @@ export interface UiSettings {
   topBarHidden: boolean; // true = 永久隐藏顶栏
   showWaveform: boolean; // 底部波形条显隐
   showLevelMeter: boolean; // ControlBar 时间右侧文件级 L/R 峰值显示
+  showTimecodeOsd: boolean; // 视频区左上角 时间码(ms) + 帧号 OSD
   rememberPosition: boolean; // 记忆每个文件上次播放位置
   frameStepMultiplier: number; // Shift+←/→ 多帧步进的帧数
   alwaysOnTop: boolean; // 窗口置顶
@@ -45,6 +46,7 @@ const defaults: UiSettings = {
   topBarHidden: false,
   showWaveform: true,
   showLevelMeter: true,
+  showTimecodeOsd: false,
   rememberPosition: true,
   frameStepMultiplier: FRAME_STEP_DEFAULT,
   alwaysOnTop: false,
@@ -84,6 +86,7 @@ interface SettingsState extends UiSettings {
   settingsOpen: boolean;
   recordingAction: ShortcutAction | null;
   gotoFrameOpen: boolean;
+  syncDebugVisible: boolean; // 同步误差监视器（调试工具，不持久化，每次启动关闭）
   bootstrapped: boolean; // store 加载完成才置 true，避免在 hydrate 前覆盖到 store
 
   setPlaylistCollapsed: (v: boolean) => void;
@@ -92,6 +95,9 @@ interface SettingsState extends UiSettings {
   setTopBarHidden: (v: boolean) => void;
   setShowWaveform: (v: boolean) => void;
   setShowLevelMeter: (v: boolean) => void;
+  setShowTimecodeOsd: (v: boolean) => void;
+  toggleTimecodeOsd: () => void;
+  toggleSyncDebug: () => void;
   setRememberPosition: (v: boolean) => void;
   setFrameStepMultiplier: (v: number) => void;
   setAlwaysOnTop: (v: boolean) => void;
@@ -125,6 +131,7 @@ function stripUi(s: SettingsState): UiSettings {
     topBarHidden: s.topBarHidden,
     showWaveform: s.showWaveform,
     showLevelMeter: s.showLevelMeter,
+    showTimecodeOsd: s.showTimecodeOsd,
     rememberPosition: s.rememberPosition,
     frameStepMultiplier: s.frameStepMultiplier,
     alwaysOnTop: s.alwaysOnTop,
@@ -139,6 +146,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   settingsOpen: false,
   recordingAction: null,
   gotoFrameOpen: false,
+  syncDebugVisible: false,
   bootstrapped: false,
 
   setPlaylistCollapsed: (v) => {
@@ -166,6 +174,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ showLevelMeter: v });
     persistIfBootstrapped(get, { showLevelMeter: v });
   },
+  setShowTimecodeOsd: (v) => {
+    set({ showTimecodeOsd: v });
+    persistIfBootstrapped(get, { showTimecodeOsd: v });
+  },
+  toggleTimecodeOsd: () => {
+    const v = !get().showTimecodeOsd;
+    set({ showTimecodeOsd: v });
+    persistIfBootstrapped(get, { showTimecodeOsd: v });
+  },
+  toggleSyncDebug: () => set((s) => ({ syncDebugVisible: !s.syncDebugVisible })),
   setRememberPosition: (v) => {
     set({ rememberPosition: v });
     persistIfBootstrapped(get, { rememberPosition: v });

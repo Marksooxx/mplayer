@@ -130,6 +130,12 @@ async function ensureInit(): Promise<void> {
       background: "color",
       "force-window": "yes",
       "idle": "yes",
+      // ★ 精确 seek ★
+      // mpv 默认 hr-seek 下相对 seek(方向键快进/快退)按关键帧对齐,
+      // 长 GOP 视频上"跳 5 秒、落在几秒外的关键帧"——对帧级检查工具是
+      // 硬伤,也是"进度条落点 ≠ 光标位置"的直接来源。hr-seek=yes 让
+      // 所有 seek 精确到时间点(代价:长 GOP 上 seek 稍慢,可接受)。
+      "hr-seek": "yes",
       volume: settings.volume,
       mute: settings.muted ? "yes" : "no",
       speed: settings.speed,
