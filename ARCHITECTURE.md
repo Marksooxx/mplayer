@@ -815,6 +815,44 @@ mpv 解码到文件末尾
 - 这同样适用于 **gapless playback**(连播两个文件无空隙)。mpv 有 `prefetch-playlist=yes` + `--gapless-audio=yes` 可以实现,目前没接 —— 留作未来优化。如果用户报告播放列表切歌有空白,按同样原理走 mpv 内部 prefetch 而不是 JS 监听 EOF 再加载下一首。
 - 类比:这跟 §6.22 "不要相信外部状态机在状态转换边界上的瞬时值" 同根 —— **状态转换边界上 JS 的及时性都不够用**,要么下沉到 native,要么接受不无缝。
 
+### 6.30 光标"差一点 1:1" —— 陈旧度补偿 + PLL 式连续微调(时钟从动)
+
+**现象**:§6.22 的虚拟播放头方案落地后,光标不再瞬移/抖动,但用户仍反馈"没有 1:1 完美对应的感觉"——光标与音画之间存在感知得到、但说不清的几十 ms 级偏差。
+
+**根因(三个系统性误差源,全部低于 §6.22 方案的修正阈值)**:
+
+1. **snap 采用的 position 是陈旧的**。`store.position` 走 "mpv 发出 → Rust → Tauri IPC → JS 事件循环 → 下一个 rAF 消费" 链路,消费时已过期 5~40ms。`playerStore.setPosition` 一直记录着 `positionObservedAt` 时间戳,但从未被消费(死代码)。每次 snap(seek 后/loadFile 后/初始化)都注入一个随机常量滞后。
+2. **<300ms 的误差永不收敛**。播放中 displayed 纯 dt 自由累加,只有偏差 >300ms 才 snap——snap 注入的滞后、以及每次暂停/恢复循环因 mpv pause-retreat(§6.22 根因 B)注入的几十 ms 偏移,全部**永久保留且可累积**。
+3. **相对 seek 按关键帧对齐**。mpv 默认 `hr-seek` 配置下方向键快进/快退落在关键帧上,长 GOP 视频"跳 5 秒、落在几秒外"。(`frameStepBy` 早已用 `relative+exact`,§6.16,但方向键和进度条没用。)
+
+**修复(时钟从动 clock-slaving,`useCursorAnimation.ts`)**:
+
+1. **陈旧度补偿(age compensation)**:外推真值 = `position + (now − max(positionObservedAt, playStartedAt)) × speed`,上限 `AGE_CAP=1.5s`(覆盖 §6.25 的 1Hz fallback poll,再旧视为停滞不外推)。`playStartedAt` 下界必不可少——恢复播放的瞬间若从 `positionObservedAt` 起算,会把整个暂停时长外推进去导致 snap 到天文数字。
+2. **PLL 式连续微调(slew)**:播放中每帧 `err = 外推真值 − displayed`;|err| > 300ms 硬 snap(真 seek/loop 回绕兜底),否则按时间常数 `SLEW_TAU=0.4s` 指数收敛,修正速率钳制在 `±10% × speed`(数学上保证光标永不倒退:`dt×speed − 0.1×dt×speed > 0`)。任何来源的小偏差 ~1s 内无感归零。
+3. **暂停行为完全不变**:不自动修正(§6.22 教训仍然成立),暂停期间的残留偏差交给恢复播放后的 slew 处理。
+4. **`hr-seek=yes`** 进 mpv init 选项:所有 seek 精确到时间点。代价是长 GOP 上 seek 稍慢,对帧级检查工具是正确的 trade-off。
+5. **顺带修复拖拽边角 bug**:tick 的拖动分支原来每帧 `lastSeenPosition = s.position`,会把松手后 200ms 乐观窗内到达的 seek 回报静默吞掉——暂停态下 `forceNextSnap` 从此等不到"下一次 position 变化",光标停在点击处而非 mpv 实际落点(非精确 seek 时代两者可差数秒)。修复:拖动分支不消费 `lastSeenPosition`。
+6. **"真在播"门控 `playing = isPlaying && fileLoaded`**:mpv `idle=yes` 且无文件时 pause=false → `isPlaying=true` 但 position 永远 0——若按播放处理,displayed 空转累加、被外推上限拽回,0.3s 一次锯齿 snap(UI 不可见但污染调试统计;真机实测空闲 40s 攒了 ~118 次)。门控后空闲期完全静默,稳态播放 10s 实测 snap 增量为 0。
+
+**验证工具**:`SyncDebugOverlay.tsx`(默认 `Ctrl+Shift+D`,已注册为 ShortcutAction 可在设置面板重绑;状态不持久化)。实时显示本帧残差 err、5s 窗口 avg/min/max、position 观测频率(事件链正常 ~30Hz / poll 兜底 ~1Hz)、观测陈旧度 age、硬 snap 计数。把"1:1 的感觉"变成可测数字。衍生产品功能:`TimecodeOsd.tsx`(默认 `T`)——左上角毫秒级时间码 + 帧号 OSD,数据源同为虚拟播放头,帧号换算与 GotoFrameDialog 一致(`round(displayed × fps)`)。
+
+**经验教训**:
+- **异步观测值必须带时间戳消费**。跨 IPC 的时钟读数在到达时已是历史值,"读到什么就用什么"每次都注入随机滞后。记录观测时刻、消费时外推,是所有"UI 从动外部时钟"场景的标配(游戏 netcode 的 entity interpolation 同理)。
+- **"自由跑 + 大阈值 snap"会让小误差永生**。阈值之下需要一条连续收敛路径(slew/PLL),阈值只留给真正的不连续事件(seek)。收敛速率必须钳制在感知阈值内,否则修正本身变成新的抖动源。
+- 外推的起点必须限定在"时钟确实在走"的时段内(`playStartedAt` 下界),否则暂停/恢复边界会产生巨大伪 seek——又是 §6.22 "状态转换边界" 的变体。
+
+### 6.31 波形缓存键缺内容指纹 —— 同路径覆盖后静音区显示旧波形
+
+**现象**:用户报告(长期使用仅出现一次):某文件的**静音区域**上显示着波形。重启后消失,无法复现。
+
+**根因**:`peaks.ts` 的 LRU 缓存键只有 `路径::samplesPerPixel`,不含任何内容指纹。触发链:播放文件 A → 波形入缓存 → **同路径**文件被重新导出/覆盖(AI 配音工作流里 mt/aivc 重渲染同名 wav 是常态)→ 再次播放 → mpv 播的是新音频,波形图给的是旧内容 → 新版本的静音区叠着旧版本的波形。缓存在内存(20 条 LRU),重启/换播 20 个文件后自动消失——完美解释"只见过一次"。
+
+**为什么不是别的**:wavesurfer `normalize: true` 放大近静音文件的噪声底也能造成"静音区有波形",但那是**每次打开该文件都复现**的确定性现象,与一次性不符。
+
+**修复**:Rust 端加 `file_fingerprint` 命令(`std::fs::metadata` 取 size + mtime_ms,微秒级开销),`getPeaks` 先取指纹再拼缓存键 `路径::spp::size:mtime`。stat 失败(文件消失/网络盘抖动)退化为路径级键,行为与旧版一致,不影响可用性。
+
+**经验教训**:**凡是"按路径缓存派生数据"的地方,路径都不是身份,内容才是**。文件会被原地覆盖——尤其在媒体生产工作流里。廉价的 size+mtime 指纹能挡住 99.9% 的失效场景(碰撞需要"同大小 + 同 mtime + 不同内容",实际不发生)。
+
 ---
 
 ## 7. 性能 / UX 考量
@@ -823,7 +861,7 @@ mpv 解码到文件末尾
 - **mpv 渲染走 native GPU**，前端 webview 几乎只负责 UI 控件，CPU/GPU 占用极低
 - **滑块 fill 用 `transform: scaleX`**：GPU 合成层，144Hz 拖动不触发 layout/paint
 - **滑块 thumb 用 `left:%` + `translate(-50%, -50%)`**：单元素 layout 成本可忽略；与 fill 的 scale 错峰（transform 百分比相对自身，不能用来在父容器内移动，详见 §6.8）
-- **虚拟播放头单例**（`useCursorAnimation.ts`）：rAF 状态（`displayed / lastTickTime / pauseFreezeUntil` 等）放在**模块级**，全局只一个 tick。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor / wavesurfer.setTime）通过 `useVirtualPlayhead(cb)` 订阅同一帧，绝对同步。父组件高频重渲染不会重启 rAF / 重置 `displayed`（旧实现把状态放 useEffect 局部 + 依赖 updater 会被父渲染节奏摧毁，详见 §6.22）
+- **虚拟播放头单例**（`useCursorAnimation.ts`）：rAF 状态（`displayed / lastTickTime / pauseFreezeUntil` 等）放在**模块级**，全局只一个 tick。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor / wavesurfer.setTime）通过 `useVirtualPlayhead(cb)` 订阅同一帧，绝对同步。父组件高频重渲染不会重启 rAF / 重置 `displayed`（旧实现把状态放 useEffect 局部 + 依赖 updater 会被父渲染节奏摧毁，详见 §6.22）。播放中按"陈旧度补偿外推真值 + PLL 式 slew 微调"从动 mpv 时钟，残差钉在 ±几 ms（详见 §6.30；Ctrl+Shift+D 开 SyncDebugOverlay 实测）
 - **进度条父容器加 `contain: layout paint`**：隔离 thumb 的 `left:%` layout pass，不波及外层 ControlBar 其他元素
 - **PlaylistPanel `contain: layout paint` + `will-change: transform`**：滑入滑出动画跑在合成器层，跟 cursor 高频 DOM 写入互不干扰
 
@@ -842,7 +880,7 @@ mpv 解码到文件末尾
 
 ### 7.4 波形管线
 - **Rust symphonia 离线解码 peaks**：流式解码不爆内存，几乎所有 codec；返回 `Vec<f32>` 几 KB 量级
-- **波形 peaks LRU 缓存 20 条**：切回最近播过的文件零成本
+- **波形 peaks LRU 缓存 20 条**：切回最近播过的文件零成本；键含 `size+mtime` 内容指纹，同路径覆盖后旧波形立即失效（§6.31）
 - **WaveformStrip 实际 56px 高、波形条 `barWidth: 2, barGap: 1, samplesPerPixel: 512`**：视觉密度高且解码量适中
 - **波形与进度条 `inset-x-4` 对齐**：避免 16px 错位让人感觉光标不同步
 - **独立 cursor div 叠在波形上**：即便 wavesurfer `<audio>` media 无法解码（mkv/dts 等），cursor 也跟着 mpv `time-pos` 走
@@ -902,7 +940,9 @@ mpv 解码到文件末尾
 |---|---|
 | mpv 怎么 init / 怎么收 event / 1Hz fallback poll | `src/hooks/useMpv.ts` |
 | mpv 命令封装（含 `addSubtitle` / `setSubDelay` / `stopPlayback` / `forcePlayheadSnap`） | `src/lib/mpv.ts` |
-| 虚拟播放头单例（cursor rAF） | `src/hooks/useCursorAnimation.ts` |
+| 虚拟播放头单例（cursor rAF / 陈旧度补偿 / slew 微调） | `src/hooks/useCursorAnimation.ts` |
+| 同步误差调试 overlay（Ctrl+Shift+D） | `src/components/SyncDebugOverlay.tsx` |
+| 时间码 / 帧号 OSD（T） | `src/components/TimecodeOsd.tsx` |
 | 全局快捷键派发 | `src/components/KeyboardShortcuts.tsx` |
 | 快捷键定义 / 默认值 / 工具 | `src/lib/shortcuts.ts` |
 | 设置面板 + 录键 UI | `src/components/SettingsPanel.tsx` |

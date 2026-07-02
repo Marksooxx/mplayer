@@ -175,3 +175,29 @@ fn calculate_peaks_sync(file_path: String, samples_per_pixel: u32) -> Result<Pea
         peak_overall,
     })
 }
+
+/// 文件内容指纹（大小 + 修改时间 ms）。
+/// peaks 缓存键的组成部分：同路径文件被重新导出/覆盖后（AI 配音工作流的
+/// 常态操作），前端旧波形缓存立即失效，不再出现"静音区显示旧内容波形"。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileFingerprint {
+    pub size: u64,
+    pub mtime_ms: u64,
+}
+
+#[tauri::command]
+pub fn file_fingerprint(file_path: String) -> Result<FileFingerprint, String> {
+    let meta = std::fs::metadata(&file_path)
+        .map_err(|e| app_error("E_FINGERPRINT_STAT", format!("stat failed: {}", e)))?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(FileFingerprint {
+        size: meta.len(),
+        mtime_ms,
+    })
+}

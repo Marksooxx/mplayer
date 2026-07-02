@@ -58,6 +58,7 @@ pub fn run() {
         .manage(LaunchArgs(Mutex::new(initial_paths)))
         .invoke_handler(tauri::generate_handler![
             peaks::calculate_peaks,
+            peaks::file_fingerprint,
             get_launch_args
         ])
         .setup(|app| {

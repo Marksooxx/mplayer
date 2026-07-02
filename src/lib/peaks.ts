@@ -18,16 +18,34 @@ export interface PeaksData {
   peakOverall: number;
 }
 
-// 简易 LRU，key = filePath::samplesPerPixel
+// 简易 LRU，key = filePath::samplesPerPixel::size:mtime
 // WaveformStrip 和 LevelMeter 共用这一个 cache —— 一次解码两个组件分享。
+//
+// ★ 键里必须带内容指纹（size+mtime）★
+// 只按路径缓存时，同路径文件被重新导出/覆盖（AI 配音工作流常态）会命中
+// 旧内容的波形 —— 表现为"新文件的静音区叠着旧波形"（§6.31）。
+// stat 由 Rust file_fingerprint 命令完成；失败（文件消失/网络盘抖动）时
+// 退化为路径级键，行为与旧版一致。
 const cache = new Map<string, PeaksData>();
 const MAX_CACHE = 20;
+
+interface FileFingerprint {
+  size: number;
+  mtimeMs: number;
+}
 
 export async function getPeaks(
   filePath: string,
   samplesPerPixel: number,
 ): Promise<PeaksData> {
-  const key = `${filePath}::${samplesPerPixel}`;
+  let fp = "";
+  try {
+    const f = await invoke<FileFingerprint>("file_fingerprint", { filePath });
+    fp = `${f.size}:${f.mtimeMs}`;
+  } catch {
+    /* stat 失败退化为路径级缓存 */
+  }
+  const key = `${filePath}::${samplesPerPixel}::${fp}`;
   const cached = cache.get(key);
   if (cached) {
     // LRU 触发：删后插，保持插入顺序即访问顺序
