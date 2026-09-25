@@ -143,7 +143,8 @@ Lucide 是图标体系。最初用 emoji（`▶ ⏸ ⏪ ⏩`），用户反馈"�
 
 ```
 hooks/
-├── useMpv.ts             单例 init promise；observer 注册；playIndex / playNext / playPrev
+├── useMpv.ts             单例 init promise；observer 注册（含 audio-pts）；playIndex / playNext / playPrev
+├── useCursorAnimation.ts 虚拟播放头单例：rAF + 订阅分发（算法在 lib/playheadClock.ts）
 └── useVideoMargins.ts    状态驱动 setVideoMarginRatio（仅 fullscreen/playlistCollapsed/showWaveform）
 
 lib/
@@ -153,6 +154,9 @@ lib/
 │                         getSubDelay / stopPlayback / parseTrackList / getCurrentTracks
 ├── shortcuts.ts          ShortcutAction 枚举 + ACTION_LABELS + DEFAULT_SHORTCUTS + eventToCombo / displayCombo /
 │                         FRAME_STEP_MIN/MAX/DEFAULT 常量
+├── playheadClock.ts      播放头时钟从动（audio-pts / hold / coast / 循环取模 / slew），纯逻辑
+├── waveTimeline.ts       波形唯一时间轴：axisDuration / resamplePeaks / timeToFrac / fracToTime
+├── peaks.ts              getPeaks（LRU + 进行中请求去重）/ toDb
 ├── persist.ts            getResumePosition / savePosition / clearPosition / clearAllPositions /
 │                         loadSettings / saveSettings
 └── format.ts             formatTime / basename / parentDir
@@ -167,8 +171,9 @@ store/
 ```
 src-tauri/src/
 ├── main.rs       入口（mobile_entry_point 兼容）
-├── lib.rs        plugin 注册 + invoke_handler![peaks::calculate_peaks]
-└── peaks.rs      symphonia 解码 → PeaksData
+├── lib.rs        plugin 注册 + invoke_handler![peaks::calculate_peaks, peaks::file_fingerprint, …]
+├── peaks.rs      symphonia 流式解码 → 自适应分桶 PeaksData（含 startTime）
+└── media_timing.rs  MP4 elst / MKV CodecDelay 只读解析（波形对齐 mpv 时间轴）
 src-tauri/build.rs   编译时复制 lib/*.dll 到 target/<profile>/（详见 §5.1）
 ```
 
@@ -262,26 +267,24 @@ mouseup
 ### 4.4 波形条加载
 
 ```
-WaveformStrip useEffect(path 变化)
+WaveformStrip
         │
-        ├──► getPeaks(path, 512)      LRU 缓存 20 条；命中即返回
+        ├──► getPeaks(path)           LRU 20 条 + 进行中请求去重；键 = 路径::v2::size:mtime
         │       │ (未命中)
-        │       └──► invoke("calculate_peaks", { filePath, samplesPerPixel: 512 })
-        │              symphonia probe → decode all packets → 桶化 max/min → 返回
+        │       └──► invoke("calculate_peaks", { filePath })
+        │              symphonia 流式解码 → 16 帧起的自适应分桶(≤16384 桶) max/min
+        │              + startTime(MP4 elst / MKV CodecDelay / MP3 LAME delay，§6.32)
         │
-        ├──► WaveSurfer.create({
-        │       container: ref,
-        │       peaks: [data.peaks],
-        │       duration: data.duration,
-        │       url: convertFileSrc(path),  // 给 wavesurfer 的 media 元素
-        │       interact: false,            // 我们自己处理点击 seek
-        │     })
+        ├──► axis = fileLoaded && mpv duration > 0 ? mpv duration : peaks 结束时刻
+        │    bins = resamplePeaks(peaks, axis, 容器 CSS 宽度)   按真实时间摆放、留空、裁剪
+        │    ws.load("", [bins], axis)       wavesurfer 只当绘制器：无 url、无 <audio>
         │
-        └──► useVirtualPlayhead((displayed) => ws.setTime(displayed))
-            rAF 驱动（144Hz），与 ProgressFill / ProgressThumb 同源同帧。旧实现走
-            React useEffect ← position state，受 mpv time-pos 30Hz 上限制约，肉眼能
-            感受到帧率低。另有一个独立的"光标 div" (WaveformCursor) 也接同一个
-            playhead，即使 wavesurfer media 解码失败也能跟着 mpv 走。详见 §6.22
+        └──► useVirtualPlayhead((displayed) => {
+               ws.getRenderer().renderProgress(timeToFrac(displayed, axis))   已播放填色
+               WaveformCursor.left = timeToFrac(displayed, axis)              光标
+             })
+            rAF 驱动（144Hz），与 ProgressFill / ProgressThumb 同源同帧；点击 seek 用
+            fracToTime 反算 —— 光标、填色、点击、peaks 共用同一时间轴。详见 §6.22 / §6.32
 ```
 
 ### 4.5 字幕加载（外部）
@@ -851,7 +854,80 @@ mpv 解码到文件末尾
 
 **修复**:Rust 端加 `file_fingerprint` 命令(`std::fs::metadata` 取 size + mtime_ms,微秒级开销),`getPeaks` 先取指纹再拼缓存键 `路径::spp::size:mtime`。stat 失败(文件消失/网络盘抖动)退化为路径级键,行为与旧版一致,不影响可用性。
 
+**更正(§6.32)**:指纹键只有在 `getPeaks` 被重新调用时才起作用,而当时 WaveformStrip 的取数只依赖路径,同一路径覆盖后重新打开并不会重取——此处"旧波形立即失效"的说法并不成立。§6.32 让取数依赖加载代次(`loadSeq`)才真正补上;缓存键现为 `路径::v2::a<音轨序号>::size:mtime`。
+
 **经验教训**:**凡是"按路径缓存派生数据"的地方,路径都不是身份,内容才是**。文件会被原地覆盖——尤其在媒体生产工作流里。廉价的 size+mtime 指纹能挡住 99.9% 的失效场景(碰撞需要"同大小 + 同 mtime + 不同内容",实际不发生)。
+
+### 6.32 波形 ↔ 声音"一直差一点" —— time-pos 不是音频时钟 + 波形没有时间轴
+
+**现象**:§6.30 之后 SyncDebugOverlay 的 err 已是 ±几 ms,但用户仍反馈"波形和声音的同步一直有点小问题,以前只是减少了"。err 的定义是"外推值 − displayed",只衡量光标对外推值的跟随;"外推值本身离声音多远"和"波形画在哪"这两类整体偏移它测不到——本节的根因全在这里。
+
+**根因 A:time-pos 不等于"正在响"的位置**(离线 libmpv ctypes 探针 + 真实 WASAPI 事件录制 + loopback 对拍;App 内 Ctrl+Shift+D 的 `tp−ap` 可直接看到)
+
+1. **单曲循环(loop-file=inf)回绕**:解码端先 seek 回 0,time-pos 立刻报 0.0 并冻结,而 AO 缓冲里上一圈的尾巴还要再响约 250ms(ao=null 下约 350ms)。旧算法 |err|>300ms 硬 snap 到 0 → 光标提前回绕;之后约 −250ms 的误差低于阈值,只能按 10% 慢追,2s 片段一圈追不完——回放实测平均领先 146ms、峰值 262ms。
+2. **视频文件**:time-pos = 刚送进 VO 队列的视频帧 pts(mpv `video.c` 在 `vo_queue_frame` 之前赋值),比声音超前 1–2 帧:vo=null 实测 24fps +44~49ms、60fps +33ms;App 内 gpu-next 实测 24fps `tp−ap` ≈ +36ms。
+3. **seek / 起播**:time-pos 立刻报落点,音频要再过 20–50ms 才真正开始;旧算法立即外推 → 光标先走,领先 14–55ms、约 1s 收敛。
+4. **变速**:1→1.5 倍时 mpv 时钟真实回退约 146ms(loopback 证实声音同样回退),10% slew 需约 1s → 平均领先 56ms。
+5. **暂停恢复**:音频真实起点相对暂停位置浮动 −31~+15ms,slew 慢追 → p95 22ms。
+
+**根因 B:波形没有时间轴,只是被拉满宽度**(ffmpeg 生成 1.000s / 2.500s 脉冲测试音,mpv `ao=pcm` 录真实输出 vs symphonia 解码对拍)
+
+1. symphonia 0.5.5 不应用容器起点 / priming(`enable_gapless` 只作用于 MP3/Ogg;isomp4 解析了 elst 但不用;mkv 无 CodecDelay 处理;AAC 解码器不裁):LAME MP3 +25.06ms、AAC(m4a/mp4/mkv)+21.3~23.2ms、音轨晚于视频起播(elst 空编辑 / mkv 首块时间戳)−178~−500ms。mpv 全部会应用。
+2. wavesurfer 把 peaks 均匀铺满画布,横轴 = symphonia 解码时长;WaveformCursor 按 mpv duration 定位;带 `url` 时 wavesurfer 自己的进度/光标又按 `<audio>.duration` 定位——三个时长来源。音频短于视频(mov 3.0s / 3.5s)时 1s 处错 167ms、2.5s 处错 417ms。
+3. spp=512 的桶起点量化:桶内瞬态从桶起点开始亮,WAV 也平均偏早 5.5~8.9ms(24kHz TTS 13~17ms)。
+4. 每帧 `ws.setTime` 给真实 `<audio>` 赋 currentTime = 每帧一次完整 media seek(暂停时同值也 seek),纯浪费主线程。
+
+**修复**
+
+- 时钟(`src/lib/playheadClock.ts` 纯逻辑;`useCursorAnimation.ts` 只剩 rAF / 订阅分发):
+  - 新观测 `audio-pts`(= 已写入 pts − speed × 驱动延迟),有音轨时作主时钟;tick 改用 rAF 帧时间戳;"有音轨"以 track-list 的 `selected` 为准,三态:start-file 置为未知(`tracksKnown=false`),非空 track-list 事件或 file-loaded 主动查询后才确认——未知时不按"无音轨"处理(否则起播时会在音频出声前开走)。
+  - **用户操作(op)**:seek / 帧步进 / loadFile 前由调用方 `forcePlayheadSnap()` 登记。事件到达 JS 的时刻不能说明 mpv 何时产生它(插件每个事件单独 spawn 转发,操作发出后、mpv 执行前产生的旧值照样晚到);命令返回后立即查询 time-pos 也不可靠(实测播放中 mp4 仍可能读到旧值,暂停中 wav 3ms 后已是 AO 缓冲虚值)。所以 seek / 加载类 op 以 mpv 的 `playback-restart` 事件(`store.restartAt`)为"完成"标记,属于本次操作的回报 = op 之后、完成之前到达的 time-pos(按观测时刻比较,落点与 restart 常在同一帧内先后到达):
+    - **目标提示**:seek 类 op 登记时带上预期落点(绝对 seek = 目标秒数;相对 seek / 多帧步进 = mpv 当前位置 + 位移,基准与 mpv 相对 seek 一致取 time-pos,播放中外推的起点不早于恢复播放时刻;连按方向键时上一次 seek 尚未执行——最新位置回报还不在它的目标附近——就在它的目标上累计(mpv 也会把排队中的相对 seek 合并),1.5s 兜底;加载 = 0;按时长钳制)。有目标时只认与目标相差 ≤0.12s(容纳视频帧对齐,循环按环形距离)的回报为落点——操作前在途的旧位置、暂停 seek 后 mpv 报出的 AO 缓冲虚值(纯音频暂停 seek 完成约 50ms 后出现,ao=null 实录 −184ms)都在容差外;完成后 300ms 仍无相符回报,直接显示目标本身。帧步进没有目标提示;
+    - 暂停态:跟随相符的回报(视频完成后才到的"真实显示帧"也会采用,例 0.81→0.8333);无目标时跟随完成之前到达的回报,完成标记被乱序转发得比落点早时采用完成后的第一条;暂停跟随最多 3s;
+    - 播放态:光标钉在落点(hold,不走),直到"完成之后(且若中途恢复过播放,则恢复之后)"的首个有效 audio-pts 再对齐。这条 audio 必须与落点(尚无落点时与目标)相容:外推值 − 参照 ∈ [−0.1s, 0.25s + 完成后流逝时间 × speed],循环按环形距离,否则视为乱序晚到的旧值、等下一条;对齐带不后退保护(落后 <150ms 时保持不动,由 slew 以 90% 速度等外推追上);解除后 0.5s 内新到的 audio-pts 若偏差 >30ms 直接对齐(兜住小幅 seek 时旧值恰好通过相容检查的情况,时钟源切到 time-pos 即关闭该窗口);超时 2s 兜底;确认无音轨时拿到落点(或按目标)后解除;
+    - mpv 的 `frame-step` 不产生 restart,`frame-back-step` 的落点晚于它自己的 restart 约 55ms 到达,两者都按"帧步进"语义登记:暂停中一直跟随回报,直到下一次操作 / 恢复播放;帧步进会先报 pause=0 再与落点同批报 pause=1,200ms 内不因音频时钟解除钉住(防同批事件乱序);
+    - 早于最近一次 op 的 audio-pts 一律作废;`frameStepBy` 的登记挪到查 fps 的 IPC 之后、发 seek 之前。
+  - 暂停态没有 op 时不采用任何 position 回报(涵盖并取代旧的 280ms 冻结窗);暂停中窗口后台 >1s 后恢复也保持原值。
+  - 回绕等内部原因 audio-pts 短暂为 null → **coast**(按 dt 惯性前进、不修正);回绕尾巴的负值 + duration;单曲循环时 displayed 与误差都按 duration 取模(op 钉住期间不取模);audio-pts 播放中 >600ms 不更新视为停更,退回 time-pos(1Hz poll 兜底)。
+  - 变速后首个新观测直接 snap;恢复播放后首个新观测若光标落后则一步追上(只向前)。
+  - 无音轨 / aid=no:退回 time-pos 外推(旧行为)。
+  - `useMpv`:start-file 时 duration 归零、audioPts 置 null、tracks 清空、`loadSeq` 递增;file-loaded 的兜底查询(pause / time-pos / duration / track-list / aid)落地前核对 loadSeq;1Hz poll 只在事件链沉默 >500ms 时触发,请求在途期间 position / audio / restart / loadSeq 任一变化则作废。
+- 波形(`src-tauri/src/peaks.rs` + `media_timing.rs`,前端 `src/lib/waveTimeline.ts`):
+  - 流式分桶(不再整文件样本常驻内存),每桶 16 帧起,满 16384 桶时相邻合并、帧数翻倍;
+  - 返回 `startTime`(解码第 0 帧在 mpv 时间轴上的秒数):MP4 elst;MKV = 音轨首包 − 首个 Cluster 的 Timestamp(mpv demux_mkv 的 `probe_first_timestamp` 就以它为 start_time)− CodecDelay,Info / Tracks 排在 Cluster 之后时按 SeekHead 跳过去读;裸 MP3 = −LAME delay。**不开** `enable_gapless`:无 Xing 头的 MP3 会按估算帧数截尾 26ms,而 mpv 不截;
+  - 按包时间戳补齐 >10ms 的流内缺口(分片 MP4 首样本时长被拉长、MKV 中途时间戳跳变、解码失败被跳过的包),累计上限 6h;时间戳一律按 i64 处理(symphonia mkv 对负的块相对时间戳做 u64 减法,release 回绕、debug 溢出 panic——dev profile 已对该依赖关闭 overflow-checks,与 release 一致),|startTime| ≥ 1 天视为异常退回 0;采样率以解码输出为准;
+  - 按 mpv 当前选中的音轨选轨:`audioIndex` = 选中音轨在音轨中的序号,Rust 按容器顺序取第 N 条音轨(MP4 数 hdlr=soun 的 trak、MKV 数 TrackType=2 的 TrackEntry——symphonia 对 MP4 里解不了的音轨不给采样率,无法与视频轨区分);序号越界或所选音轨 symphonia 解不了时明确报"不可用",不再拿别的音轨冒充;aid=no 时取第一条作预览;缓存键含音轨;
+  - 前端唯一时间轴 axis = mpv duration,peaks 按真实时间重采样到每 CSS px 一格:晚起播左侧留空、音频短于视频右侧留空、priming / 尾 padding 被裁、末桶按真实结尾裁剪;光标、已播放填色、点击 seek 共用 `timeToFrac / fracToTime`;mpv 时长确认(fileLoaded && duration>0)前不按猜测的轴重画、不画填色、不接受点击;
+  - WaveformStrip 取数依赖 `[path, audioIndex, loadSeq]`,peaks 与加载代次绑定:同一路径被覆盖后重导出再打开也会重取(§6.31 的指纹缓存此前在同路径重开时根本没有被调用),新加载完成后只画本次加载取到的 peaks,不会把旧 peaks 摆到新时长上;加载完成前旧图原样保留;
+  - wavesurfer 只当绘制器:不传 url(它内部的 `<audio>` 没有 src、不加载文件)、`cursorWidth: 0`(只留 WaveformCursor)、进度直写 `getRenderer().renderProgress()`、数据更新用 `ws.load('', …)`(7.12.7 的 `setOptions` 重绘的是旧 audioData;`Decoder.normalize` 会原地改写传入数组,所以每次传新数组);
+  - `getPeaks` 去掉 spp 参数(LevelMeter 同键共享)并缓存进行中请求(file-loaded 时两组件并发不再各解码一次)。
+
+**验证**
+
+- 波形:38 个样本(`peaks.rs` 带 `#[ignore]` 的对拍测试:`MPLAYER_TIMING_MEDIA=<dir> [MPLAYER_TIMING_AUDIO_INDEX=n] cargo test --lib -- --ignored --nocapture`)。能解码的样本中,WAV/FLAC/Ogg、LAME·无头 MP3、AAC m4a·ADTS·无 elst m4a·mp4·mkv、音轨延迟起播的 mp4·mkv·mov、10s 起点偏移 mkv、MP4 内 MP3、Tracks 在 Cluster 之后的 mkv 与 mpv 实播 onset 相差 0.1–0.23ms(= 一个 16 帧桶;ADTS / 无 elst m4a / 无头 MP3 两边都含 priming,一致);改前 21–500ms。首 Cluster 时间戳≠首块的 mkv 与 mpv 一致(+100ms);分片 MP4 缺口样本在缺口后测得 mpv 1.580、本实现 1.580;MKV 中途 +300ms 缺口样本 mpv 2.793、本实现 2.800(该测量受 seek 落点影响)。多音轨:第 2 条音轨延迟 300ms 的 mkv 选第 2 条时 onset 1.300(= mpv 默认播放的那条);AC3+AAC 的 mkv / mp4 选 AC3 时报不可用、选 AAC 时正确;序号越界报不可用。负块相对时间戳的畸形 mkv:onset 0.995(mpv 0.9995)。样本中 Opus、AC3、mkv 内 PCM 解码失败(symphonia 不支持)。
+- 时钟:录制的真实 mpv 事件流逐帧(144Hz)回放旧 / 新算法,真值 = audio-pts 分段线性拟合:2s 单曲循环 平均 +146→+0.1ms、峰值 262→2.2ms;mp4 24fps +49→−0.2ms;60fps +35→−0.4ms;wav seek 后 0.6s +17.5→−2.4ms;变速后 1.5s wav +56→+4.2ms、mp4 +107→+1.2ms;暂停恢复 wav −7.4→+0.2ms(p95 22→1.8ms)、mp4 +47→+2.6ms。注意:真值来自同一串 audio-pts,它证明的是"跟上 mpv 的音频时钟",不是屏幕与耳朵之间的绝对误差;模拟 L ms 事件链延迟时稳态误差 ≈ −L。
+- 暂停 / 帧步进(评审员用 libmpv 录制的真实序列):暂停中连按 5 次单帧前进、4 次单帧后退、播放中单帧前进,光标均精确落到 mpv time-pos(改前单帧前进每步落后约 1 帧);暂停中 seek 视频落到真实显示帧 0.8333(旧实现停在 0.81)、wav 停在 0.81 不采用 184ms 虚值,随后恢复播放不倒退。49 条合成边界用例全过(含 codex 第三、四、五轮给出的全部乱序反例:方向键连按(落点合并 / 逐次执行)、旧 time-pos 先到、无落点时旧 audio 先到、迟到的合法音频、循环回绕后解除、1.5 倍速、音轨表未知时起播、快速对齐不被 time-pos 带跳、暂停 restart→虚值→真落点、无相符回报时显示目标):§6.22 暂停不瞬移、后台恢复、暂停中慢 seek + 旧值先到、restart 先于落点、连续两次 seek、restart 永不到、旧 audio 在 restart 前 / 后晚到、小幅向前 / 向后 seek + 旧锚点、暂停 seek 后立即恢复(不回退到虚值)、拖动松手、帧步进同批乱序、帧步进后恢复不倒退、循环 seek 到末尾、audio 停更、无音轨(含 restart 先于落点)、音轨中途关闭、hold 超时、起播。
+- 相对 seek 目标累计(导入真实 `mpv.ts`、模拟 IPC):连按 3 次 +5 → 15/20/25;第一次落点在第二次之后才到仍正确累计;落地后按当前位置;越界钳制;长暂停后立即 +5 不把暂停时长算进目标(修复前 +1.5s)。
+- App 内(debug 构建,−45dBFS 测试音,op 状态机之前的版本):单曲循环跨回绕 5s 窗口误差 −6.2~+6.5ms;24fps mp4 `tp−ap` = +35.6ms(即旧算法在视频里的偏早量)、src=audio、err 个位数 ms;音频短于视频时波形右侧留空、刻度与进度条同轴。op 状态机这一版未能在 App 内复测(测试时桌面已锁屏)。
+
+**未解决 / 未测**
+
+- 事件链单程延迟(mpv → Rust → emit → WebView2 → JS)与 rAF → 上屏延迟仍未补偿,光标整体会晚这两段(推测合计 10–25ms,需高速摄像实测)。"用户可调视觉偏移"待实测后再定,默认只能是 0,且必须融进外推真值而非渲染层叠加(否则暂停瞬间精确回退该偏移,§6.22)。
+- 事件归属仍是"目标提示 + 完成标记 + 相容性检查"的组合推断,插件没有原生序号;帧步进没有目标提示;极端乱序(旧值被延迟到完成标记之后且与落点相差 <0.25s)时靠解除后 0.5s 快速对齐兜底。loop 内部回绕的 restart 若恰好落在用户 seek 与其自身 restart 之间,op 会被提前判完成(需 seek 落在回绕前约 50ms 内)。frame-back-step 若超过 200ms 才出落点且期间短暂播放,未验证。
+- 视频暂停态光标语义:正常播放中按暂停时,光标停在音频时钟位置,画面帧(time-pos)约超前 1 帧;帧步进 / seek 后才精确落到帧 pts。帧步进后恢复播放时光标领先约 1 帧,按"不后退"设计约 1s 内收敛到 <12ms。
+- 单曲循环回绕尾巴按 mpv duration 换算:duration 是估算值(无 Xing 头 VBR MP3)时尾巴期间有 |周期−duration| 的偏差。
+- mpv duration 本身不可靠时轴也跟着错:无 Xing 头 VBR MP3 实测高估 2 倍 / 播放中持续增长;只有音频的 MP4 带空编辑时 time-pos 会超过 duration(波形尾部被裁、光标在末端停住)。与 ControlBar 同轴,未另行处理。
+- 音轨映射只覆盖容器内置音轨(外部音轨文件、mpv 过滤掉的轨不在映射内);多段 MP4 edit list 只取首段;MKV 的 Info 后置 + 非默认 TimestampScale 只按规范实现,没有实测样本;symphonia 0.5.5 解不了 Opus / AC3 / E-AC3 / DTS / mkv 内 PCM → 这些音轨无波形(不是错位)。
+- 组件卸载或切文件后,在途的 Rust 解码任务不会取消(长文件快速切换会并发解码)。
+- 长文件的视觉精度受 3px bar 网格限制(3 分钟 / 1200px ≈ 一根 bar 450ms,±半根),与时钟无关;wavesurfer 把画布宽取整到 3px 网格,最右 1–2px 不画。
+
+**经验教训**
+
+- 调试指标只能测到它定义里的东西。err 做到 ±几 ms 后仍"感觉差一点",来源必然在 err 的定义之外:时钟源的语义、绘制的坐标系。
+- 外部引擎报的"位置"先确认是谁的位置:time-pos 是文件 / 视频位置,audio-pts 才是"正在响"的位置,两者在循环回绕、seek、视频、变速这些边界上差几十到几百 ms。
+- 跨进程事件的到达顺序不代表产生顺序。判断"这条回报属不属于我的操作",要用引擎自己发出的完成标记(playback-restart)加内容相容性检查,不能只看 JS 侧的到达时刻;"命令返回后立即查询"同样不是权威值。
+- 画在屏幕上的数据必须带自己的时间轴(起点 + 每点时长),不能靠"数组铺满宽度"与另一条时间轴碰巧对齐。
+- 合成测试要按真实事件序列造:帧步进的 pause 0→1 翻转、frame-back-step 落点晚于 restart、暂停 seek 后的 AO 虚值,都是只看文档推不出来、必须录下来才知道的。
 
 ---
 
@@ -861,7 +937,7 @@ mpv 解码到文件末尾
 - **mpv 渲染走 native GPU**，前端 webview 几乎只负责 UI 控件，CPU/GPU 占用极低
 - **滑块 fill 用 `transform: scaleX`**：GPU 合成层，144Hz 拖动不触发 layout/paint
 - **滑块 thumb 用 `left:%` + `translate(-50%, -50%)`**：单元素 layout 成本可忽略；与 fill 的 scale 错峰（transform 百分比相对自身，不能用来在父容器内移动，详见 §6.8）
-- **虚拟播放头单例**（`useCursorAnimation.ts`）：rAF 状态（`displayed / lastTickTime / pauseFreezeUntil` 等）放在**模块级**，全局只一个 tick。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor / wavesurfer.setTime）通过 `useVirtualPlayhead(cb)` 订阅同一帧，绝对同步。父组件高频重渲染不会重启 rAF / 重置 `displayed`（旧实现把状态放 useEffect 局部 + 依赖 updater 会被父渲染节奏摧毁，详见 §6.22）。播放中按"陈旧度补偿外推真值 + PLL 式 slew 微调"从动 mpv 时钟，残差钉在 ±几 ms（详见 §6.30；Ctrl+Shift+D 开 SyncDebugOverlay 实测）
+- **虚拟播放头单例**（`useCursorAnimation.ts`）：rAF 状态（`displayed / lastTickTime / pauseFreezeUntil` 等）放在**模块级**，全局只一个 tick。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor / wavesurfer.setTime）通过 `useVirtualPlayhead(cb)` 订阅同一帧，绝对同步。父组件高频重渲染不会重启 rAF / 重置 `displayed`（旧实现把状态放 useEffect 局部 + 依赖 updater 会被父渲染节奏摧毁，详见 §6.22）。播放中以 mpv `audio-pts`(扣除驱动延迟的"正在响"位置)为主时钟,按"陈旧度补偿外推 + PLL 式 slew 微调"从动;seek 后 hold、回绕 coast、单曲循环取模,算法在 `lib/playheadClock.ts`(详见 §6.30 / §6.32;Ctrl+Shift+D 开 SyncDebugOverlay 实测)
 - **进度条父容器加 `contain: layout paint`**：隔离 thumb 的 `left:%` layout pass，不波及外层 ControlBar 其他元素
 - **PlaylistPanel `contain: layout paint` + `will-change: transform`**：滑入滑出动画跑在合成器层，跟 cursor 高频 DOM 写入互不干扰
 
@@ -879,11 +955,12 @@ mpv 解码到文件末尾
 - **未 fullscreen 时 video-margin-ratio = `{ right: playlistWidth/w, bottom: (60+56)/h }`**（关闭波形条则 `bottom: 60/h`；playlist 折叠时 `right: 0`）：mpv 完全不在 UI 区域渲染，节省 GPU 也保证 UI 不被覆盖
 
 ### 7.4 波形管线
-- **Rust symphonia 离线解码 peaks**：流式解码不爆内存，几乎所有 codec；返回 `Vec<f32>` 几 KB 量级
+- **Rust symphonia 离线解码 peaks**：流式解码 + 流式分桶（16 帧起、≤16384 桶自适应），内存与 IPC 体积有上界；附带 `startTime` 把波形对齐到 mpv 时间轴（§6.32）
 - **波形 peaks LRU 缓存 20 条**：切回最近播过的文件零成本；键含 `size+mtime` 内容指纹，同路径覆盖后旧波形立即失效（§6.31）
-- **WaveformStrip 实际 56px 高、波形条 `barWidth: 2, barGap: 1, samplesPerPixel: 512`**：视觉密度高且解码量适中
+- **WaveformStrip 实际 56px 高、波形条 `barWidth: 2, barGap: 1`**：peaks 先按真实时间重采样到每 CSS px 一格再交给 wavesurfer（§6.32）
 - **波形与进度条 `inset-x-4` 对齐**：避免 16px 错位让人感觉光标不同步
-- **独立 cursor div 叠在波形上**：即便 wavesurfer `<audio>` media 无法解码（mkv/dts 等），cursor 也跟着 mpv `time-pos` 走
+- **唯一时间轴**：光标（独立 cursor div）、已播放填色、点击 seek、peaks 摆放共用 `waveTimeline.ts` 的同一映射，轴长 = mpv duration；wavesurfer 内部的 `<audio>` 不设 src、不加载文件（§6.32）
+- **波形跟随当前音轨**：按 mpv 选中音轨在容器中的序号解码，切音轨后重取；同一路径被覆盖后重载也会重取（取数依赖加载代次）
 
 ### 7.5 启动期 UX
 - **冷启动无白底闪烁** —— 多层保险（注意：body **不能**染色，必须 `transparent`，否则 mpv 视频被遮死，见 §6.21）：
@@ -918,7 +995,7 @@ mpv 解码到文件末尾
 - **关闭时 destroy mpv**：`useGracefulShutdown` hook 拦截 `onCloseRequested`，先 `await destroy()` 让 mpv 解码线程、音频输出、文件 I/O 都有机会 flush 后再退出。500ms 超时兜底——mpv 万一卡死也不会让用户关不掉窗口。完成后 `window.destroy()` 强制销毁窗口（绕过 `CloseRequested`）。
 - **回退兜底**：即使本钩子不执行，Windows 进程退出时 OS 也会一次性回收所有句柄；这一层只是让 mpv 的内部状态走完析构流程，行为更像 VLC 而非 Windows Media Player。
 - **播放期间的文件锁定**：mpv 在 Windows 上经 C runtime `_wfopen` 打开文件，**默认 share mode 是 `_SH_DENYNO`**——理论上其他进程可以读/写/删/改名这个文件。验证方法：播放某个 .mp4 时在资源管理器里删除它，若 Windows 不报"文件正在被使用"即说明锁定行为已经像 VLC 那样宽松。
-- **wavesurfer 的 `<audio>` 句柄**：通过 Tauri `convertFileSrc(path)` 走 `asset://` 协议，由 Tauri 资源处理器**按需短打开**——webview fetch 一段、Tauri 开一次文件读完关一次，并非长时间持有句柄。`ws.destroy()` 时 media element 也会释放所有引用。
+- **wavesurfer 不再持有媒体文件**：只传 peaks 不传 url，WebView 内没有加载该文件的 `<audio>` 元素（§6.32）。
 - **symphonia peaks 计算**：用 Rust `File::open` + RAII，函数返回时 `Drop` 自动关文件。
 
 ---
@@ -927,6 +1004,8 @@ mpv 解码到文件末尾
 
 - Linux / macOS 端 `tauri-plugin-libmpv` 的窗口嵌入路径未经测试
 - WaveformStrip 在超长视频（>2h）的 peaks 解码可能耗时 10s 以上——可以加进度条 / Web Worker 化
+- 波形只覆盖容器内置音轨（按 mpv 当前选中音轨取）；symphonia 解不了 Opus / AC3 / DTS 等 → 所选音轨无波形（§6.32）
+- 事件链延迟与上屏延迟未补偿（光标整体约晚 10–25ms，推测，需实测后再决定是否加用户可调视觉偏移，§6.32）
 - mpv 字幕样式 / 滤镜 / 视频比例 / 截图等高级功能未暴露 UI
 - store.json 当前 schema v2，未来加字段记得在 `load()` 里合并默认值并 bump SCHEMA_VERSION
 - 未做代码签名：Windows SmartScreen 首次运行可能弹"无法识别的发布者"。装机量起来后 SmartScreen 数据库会自动给好评，或买 EV 证书一劳永逸（¥2000+/年）
@@ -940,7 +1019,9 @@ mpv 解码到文件末尾
 |---|---|
 | mpv 怎么 init / 怎么收 event / 1Hz fallback poll | `src/hooks/useMpv.ts` |
 | mpv 命令封装（含 `addSubtitle` / `setSubDelay` / `stopPlayback` / `forcePlayheadSnap`） | `src/lib/mpv.ts` |
-| 虚拟播放头单例（cursor rAF / 陈旧度补偿 / slew 微调） | `src/hooks/useCursorAnimation.ts` |
+| 虚拟播放头单例（rAF / 订阅分发） | `src/hooks/useCursorAnimation.ts` |
+| 播放头时钟算法（audio-pts / hold / coast / 循环取模 / slew） | `src/lib/playheadClock.ts` |
+| 波形时间轴（peaks 重采样 / time↔x 映射） | `src/lib/waveTimeline.ts` |
 | 同步误差调试 overlay（Ctrl+Shift+D） | `src/components/SyncDebugOverlay.tsx` |
 | 时间码 / 帧号 OSD（T） | `src/components/TimecodeOsd.tsx` |
 | 全局快捷键派发 | `src/components/KeyboardShortcuts.tsx` |
@@ -948,7 +1029,8 @@ mpv 解码到文件末尾
 | 设置面板 + 录键 UI | `src/components/SettingsPanel.tsx` |
 | 设置持久化 + 迁移 | `src/store/settingsStore.ts` |
 | 波形条 | `src/components/WaveformStrip.tsx` |
-| 波形 Rust 端解码 | `src-tauri/src/peaks.rs` |
+| 波形 Rust 端解码（流式分桶 / startTime） | `src-tauri/src/peaks.rs` |
+| 容器起点解析（MP4 elst / MKV CodecDelay） | `src-tauri/src/media_timing.rs` |
 | mpv 视频区裁切 | `src/hooks/useVideoMargins.ts` |
 | PlaylistPanel transform 滑入滑出 | `src/components/PlaylistPanel.tsx` |
 | PlaylistItem 右键菜单 Portal | `src/components/PlaylistItem.tsx` |

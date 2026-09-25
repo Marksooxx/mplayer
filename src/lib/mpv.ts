@@ -3,11 +3,56 @@ import {
   setProperty,
   getProperty,
 } from "tauri-plugin-libmpv-api";
-import type { TrackInfo } from "../store/playerStore";
-import { forcePlayheadSnap } from "../hooks/useCursorAnimation";
+import { usePlayerStore, type TrackInfo } from "../store/playerStore";
+import { forcePlayheadSnap, mpvPositionNow } from "../hooks/useCursorAnimation";
+
+/**
+ * seek 的预期落点(虚拟播放头的目标提示，§6.32)。连按方向键时前一次 seek 还没落地，
+ * store 里的位置仍是旧值，而 mpv 会把排队中的相对 seek 累加(10→15→20→25)：上一次
+ * seek 尚未执行时以它的目标为基准累计，已执行(或超时)后改用 mpv 当前位置。
+ * "已执行"看最新的位置回报是否已在上一次目标附近(播放中允许随时间前进)——不用
+ * playback-restart 判断，因为它无法区分完成的是哪一次 seek。
+ */
+let lastSeek: { target: number; at: number } | null = null;
+const SEEK_CHAIN_MS = 1500;
+const SEEK_LANDED_TOL = 0.12;
+
+function clampToDuration(t: number): number {
+  const d = usePlayerStore.getState().duration;
+  const v = Math.max(0, t);
+  return d > 0 ? Math.min(v, d) : v;
+}
+
+function lastSeekPending(): boolean {
+  const last = lastSeek;
+  if (!last) return false;
+  const now = performance.now();
+  if (now - last.at > SEEK_CHAIN_MS) return false;
+  const s = usePlayerStore.getState();
+  if (s.positionObservedAt <= last.at) return true; // 操作之后还没有任何位置回报
+  const ahead = ((now - last.at) / 1000) * Math.max(0, s.speed) + SEEK_LANDED_TOL;
+  const d = s.position - last.target;
+  return !(d >= -SEEK_LANDED_TOL && d <= ahead);
+}
+
+function relativeTarget(delta: number): number {
+  const base = lastSeekPending() && lastSeek ? lastSeek.target : mpvPositionNow();
+  return clampToDuration(base + delta);
+}
+
+/** 诊断 / 离线测试用：最近一次登记的 seek 预期落点 */
+export function lastSeekForDebug(): { target: number; at: number } | null {
+  return lastSeek;
+}
+
+function registerSeek(target: number): void {
+  lastSeek = { target, at: performance.now() };
+  forcePlayheadSnap(true, target);
+}
 
 export async function loadFile(path: string): Promise<void> {
-  forcePlayheadSnap();
+  lastSeek = null;
+  forcePlayheadSnap(true, 0);
   await command("loadfile", [path, "replace"]);
 }
 
@@ -30,22 +75,26 @@ export async function togglePause(): Promise<void> {
 }
 
 export async function seekRelative(deltaSeconds: number): Promise<void> {
-  forcePlayheadSnap();
+  registerSeek(relativeTarget(deltaSeconds));
   await command("seek", [deltaSeconds, "relative"]);
 }
 
 export async function seekAbsolute(seconds: number): Promise<void> {
-  forcePlayheadSnap();
+  registerSeek(clampToDuration(seconds));
   await command("seek", [seconds, "absolute"]);
 }
 
 export async function frameStep(): Promise<void> {
-  forcePlayheadSnap();
+  lastSeek = null;
+  forcePlayheadSnap(false); // mpv frame-step 不产生 playback-restart
   await command("frame-step");
 }
 
 export async function frameBackStep(): Promise<void> {
-  forcePlayheadSnap();
+  // frame-back-step 的落点 time-pos 晚于它自己的 playback-restart 约 55ms 才到，
+  // 按帧步进语义登记(暂停中一直跟随回报)，不以 restart 为完成标记
+  lastSeek = null;
+  forcePlayheadSnap(false);
   await command("frame-back-step");
 }
 
@@ -56,7 +105,6 @@ export async function frameBackStep(): Promise<void> {
  */
 export async function frameStepBy(count: number): Promise<void> {
   if (count === 0) return;
-  forcePlayheadSnap();
   try {
     let fps: number | null = null;
     try {
@@ -65,6 +113,8 @@ export async function frameStepBy(count: number): Promise<void> {
     } catch { /* ignore */ }
     if (fps === null) fps = 25; // 兜底
     const delta = count / fps;
+    // 紧贴 seek 登记操作：查 fps 的 IPC 期间到达的回报都是操作前的旧值
+    registerSeek(relativeTarget(delta));
     // relative+exact 保证按时间精确 seek 而不是跳到关键帧
     await command("seek", [delta, "relative+exact"]);
   } catch (err) {

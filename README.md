@@ -14,12 +14,12 @@
 
 - 播放列表（常驻右侧，280px，可折叠；长文件名 marquee 滚动；右键菜单移到顶部 / 在文件夹中显示 / 移除；选中项 `Delete` 直接删除并停止当前播放；4 种排序模式可切换）
 - 底部常驻控件：上一首 / 单帧后退 / 播放暂停 / 单帧前进 / 下一首 / 时间 / 进度条 / 音量（百分比显示，**Ctrl+点击恢复 80%**）/ 倍速 / 音轨 / 字幕 / 波形 toggle / 播放列表切换 / 设置 / 全屏
-- 底部音频波形条（可关，控件区直接切换）：Rust `symphonia` 解码所有 mpv 支持格式的音轨，wavesurfer.js 渲染条柱，光标随 mpv `time-pos` 同步，点击 seek
+- 底部音频波形条（可关，控件区直接切换）：Rust `symphonia` 解码音轨，按 mpv 时间轴摆放（自动校正 AAC/MP3 编码器 priming、音轨晚于视频起播、音频短于视频），wavesurfer.js 渲染条柱；波形跟随当前选中音轨，同名文件覆盖后重开会刷新；光标跟随 mpv `audio-pts`（扣除声卡延迟的"正在响"位置），单曲循环回绕无提前、暂停单帧步进精确落帧，点击 seek
 - 顶栏文件名条：默认悬浮显示（鼠标到顶部时浮现，2.5s 后淡出），可在设置中切换为"永久隐藏"
 - 字幕：**拖入 .srt/.ass/.ssa/.sub/.vtt/.idx/.smi/.sup 自动加载并激活**；字幕菜单里可手动「加载字幕文件…」+ 字幕延迟 ±100ms 精调与重置
 - 跳转到指定帧（`Ctrl+F` 弹窗输入）：显示当前文件帧率 / 当前帧 / 总帧数，回车精确跳转
 - 时间码 / 帧号 OSD（`T` 或设置内开关）：视频区左上角实时显示毫秒级时间 + 当前帧号，与进度条 / 波形光标同一时钟源，帧级检查 / 对轨专用
-- 同步误差监视器（`Ctrl+Shift+D`，调试用）：实时显示 UI 光标相对 mpv 时钟的残差（ms）、5s 统计、事件频率
+- 同步误差监视器（`Ctrl+Shift+D`，调试用）：实时显示时钟源、UI 光标相对 mpv 时钟的残差（ms）、5s 统计、事件频率、`time-pos` 相对 `audio-pts` 的超前量
 - 全自定义快捷键：19 个动作可在设置面板逐条录键 / 清除 / 恢复默认
 - 三档跳转：裸键 ±5 秒（粗）/ Shift+←/→ ±N 帧（中，N 设置内 1-100 可调）/ Ctrl+←/→ ±1 帧（细）
 - 记忆每个文件的上次播放位置（短文件、近末尾、自然播完都不 resume；可一键清空）
@@ -222,12 +222,15 @@ mplayer/
 │   │   └── KeyboardShortcuts.tsx     # 全局快捷键派发器
 │   ├── hooks/
 │   │   ├── useMpv.ts                 # mpv init / observers / playIndex
-│   │   ├── useCursorAnimation.ts     # 虚拟播放头单例（rAF + 时钟从动）
+│   │   ├── useCursorAnimation.ts     # 虚拟播放头单例（rAF + 订阅分发）
 │   │   └── useVideoMargins.ts        # 状态驱动 mpv video-margin-ratio
 │   ├── store/
 │   │   ├── playerStore.ts            # 播放器全局状态
 │   │   └── settingsStore.ts          # UI 设置 + 快捷键绑定
 │   └── lib/
+│       ├── playheadClock.ts          # 播放头时钟从动算法（audio-pts / hold / 循环取模，纯逻辑）
+│       ├── waveTimeline.ts           # 波形唯一时间轴：peaks 按真实时间重采样 + time↔x 映射
+│       ├── peaks.ts                  # peaks 取数 + LRU/进行中请求缓存
 │       ├── mpv.ts                    # mpv 命令封装（setPaused/togglePause/seek/frameStepBy 等）
 │       ├── shortcuts.ts              # ShortcutAction 枚举 + 标签 + 默认绑定 + combo 工具
 │       ├── persist.ts                # 进度 + 设置 localStorage 读写
@@ -244,7 +247,8 @@ mplayer/
     └── src/
         ├── main.rs
         ├── lib.rs                    # plugin 注册 + invoke_handler
-        └── peaks.rs                  # symphonia 离线 peaks 计算 (Tauri command)
+        ├── peaks.rs                  # symphonia 流式分桶 peaks（自适应分辨率）+ 起点校正
+        └── media_timing.rs           # MP4 elst / MKV CodecDelay 解析（波形对齐 mpv 时间轴）
 ```
 
 ---

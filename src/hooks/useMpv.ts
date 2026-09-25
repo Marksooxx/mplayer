@@ -48,6 +48,9 @@ import { pickNextIndex } from "../lib/playback-mode";
 const OBSERVED = [
   ["pause", "flag"],
   ["time-pos", "double", "none"],
+  // 虚拟播放头主时钟：扣除驱动延迟的"正在响"位置（time-pos 在视频里超前 1–2 帧、
+  // 单曲循环回绕时提前约 250ms 归零，§6.32）
+  ["audio-pts", "double", "none"],
   ["duration", "double", "none"],
   ["volume", "double"],
   ["mute", "flag"],
@@ -224,6 +227,9 @@ export function useMpv(): void {
             }
             break;
           }
+          case "audio-pts":
+            s.setAudioPts(ev.data ?? null);
+            break;
           case "duration":
             s.setDuration(ev.data ?? 0);
             break;
@@ -308,20 +314,39 @@ export function useMpv(): void {
           usePlayerStore.getState().setFileLoaded(true);
           // mpv property-change 在某些容器/无音频流场景下首次 file-loaded
           // 后偶尔不发 time-pos/pause/duration —— 表现为"播放但进度条不动"。
-          // 这里主动 getProperty 一次兜底。
+          // 这里主动 getProperty 一次兜底。track-list / aid 也刷新一次：start-file 时
+          // 已清空 tracks，而相邻两个文件的 track-list 若完全相同 mpv 不会再发变更事件。
+          // 每个结果落地前核对加载代次，已切到别的文件就丢弃。
+          const seq = usePlayerStore.getState().loadSeq;
           void (async () => {
-            const ss = usePlayerStore.getState();
+            const cur = () => {
+              const st = usePlayerStore.getState();
+              return st.loadSeq === seq ? st : null;
+            };
             try {
               const pause = await getProperty("pause", "flag");
-              if (typeof pause === "boolean") ss.setIsPlaying(!pause);
+              if (typeof pause === "boolean") cur()?.setIsPlaying(!pause);
             } catch { /* ignore */ }
             try {
               const pos = await getProperty("time-pos", "double");
-              if (typeof pos === "number") ss.setPosition(pos);
+              if (typeof pos === "number") cur()?.setPosition(pos);
             } catch { /* ignore */ }
             try {
               const dur = await getProperty("duration", "double");
-              if (typeof dur === "number") ss.setDuration(dur);
+              if (typeof dur === "number") cur()?.setDuration(dur);
+            } catch { /* ignore */ }
+            try {
+              const tl = await getProperty("track-list", "node");
+              const st = cur();
+              if (st) {
+                st.setTracks(parseTrackList(tl));
+                st.markTracksKnown();
+              }
+            } catch { /* ignore */ }
+            try {
+              const aid = await getProperty("aid", "int64");
+              const st = cur();
+              if (st) st.setCurrentAid(typeof aid === "number" ? aid : null);
             } catch { /* ignore */ }
           })();
           return;
@@ -332,6 +357,16 @@ export function useMpv(): void {
           s.setFileLoaded(false);
           s.setVideoSize(0, 0);
           s.setFps(0);
+          // 上一个文件的时长/音频时钟不能带进新文件（波形时间轴按 duration 摆放）
+          s.setDuration(0);
+          s.setAudioPts(null);
+          s.resetTracks();
+          s.bumpLoadSeq();
+          return;
+        }
+        if (ev.event === "playback-restart") {
+          // seek / 加载完成标记：虚拟播放头据此判定用户操作已落地（§6.32）
+          usePlayerStore.getState().markRestart();
           return;
         }
         if (ev.event === "end-file") {
@@ -359,19 +394,26 @@ export function useMpv(): void {
     })();
 
     // time-pos fallback polling:某些容器(尤其无音频视频)mpv 不持续发
-    // time-pos property change → 进度条停在 0 不动。每 1s 主动 poll 一次
-    // mpv 真实 time-pos 兜底。播放中且有 currentIndex 才 poll,避免空载浪费。
+    // time-pos property change → 进度条停在 0 不动。每 1s 检查一次,只在事件链
+    // 真的沉默(>500ms 没有 time-pos / audio-pts)时才 poll 兜底。
+    // 竞态保护:请求在途期间若有新事件到达,poll 结果作废 —— 否则 seek 前发出的
+    // 请求会带着旧位置在 seek 之后落地,覆盖新值造成一次硬 snap 闪烁。
     const pollInterval = setInterval(() => {
       const s = usePlayerStore.getState();
       if (!s.mpvReady || !s.isPlaying || s.currentIndex < 0 || !s.fileLoaded) return;
+      const lastObs = Math.max(s.positionObservedAt, s.audioPtsObservedAt);
+      if (performance.now() - lastObs < 500) return;
+      const before = [s.positionObservedAt, s.audioPtsObservedAt, s.restartAt, s.loadSeq];
       void (async () => {
         try {
           const pos = await getProperty("time-pos", "double");
+          const cur = usePlayerStore.getState();
+          const after = [cur.positionObservedAt, cur.audioPtsObservedAt, cur.restartAt, cur.loadSeq];
+          if (after.some((v, i) => v !== before[i])) return;
           if (typeof pos === "number" && !Number.isNaN(pos)) {
-            const cur = usePlayerStore.getState().position;
             // 只在差异 > 100ms 时更新,避免覆盖正常的 property-change 事件链
-            if (Math.abs(pos - cur) > 0.1) {
-              usePlayerStore.getState().setPosition(pos);
+            if (Math.abs(pos - cur.position) > 0.1) {
+              cur.setPosition(pos);
             }
           }
         } catch { /* ignore */ }

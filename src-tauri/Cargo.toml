@@ -31,3 +31,7 @@ tauri-plugin-store = "2"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
+# symphonia-format-mkv 0.5.5 对负的块相对时间戳做 u64 减法：release 下回绕(peaks.rs 转 i64
+# 还原)，debug 下溢出检查直接 panic、波形不可用。让 dev 构建与 release 行为一致。
+[profile.dev.package.symphonia-format-mkv]
+overflow-checks = false

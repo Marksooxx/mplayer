@@ -10,17 +10,25 @@ import { useSettingsStore } from "../store/settingsStore";
  * 状态走 settingsStore.syncDebugVisible,不持久化,每次启动关闭)。
  *
  * 把"光标跟音画是不是 1:1"从感觉变成数字:
+ *   src   当前时钟源:audio(audio-pts)/ hold(seek 后等音频开始)/
+ *         coast(回绕等短暂缺失,惯性前进)/ time-pos(无音轨)/ paused / drag
  *   err   本帧残差 = 外推真值 − displayed(正 = 光标落后真值)
  *   5s    滚动窗口 avg / min / max
- *   obs   position 观测频率(Hz)—— 事件链正常 ~30,靠 1Hz poll 兜底时 ~1
- *   age   最近一次 time-pos 观测的陈旧度
+ *   obs   当前时钟源观测频率(Hz)—— 纯音频约 12–20,视频≈帧率,靠 1Hz poll 兜底时 ~1
+ *   age   当前时钟源最近一次观测的陈旧度
  *   snap  硬 snap 累计次数(频繁增长 = 时钟从动失效,在硬拽)
+ *   tp−ap time-pos 与 audio-pts 之差;有视频时即 time-pos 相对声音的超前量
+ *
+ * 注意:err 只衡量光标对"外推真值"的跟随,测不到事件链延迟、上屏延迟、
+ * 声卡/蓝牙延迟这类整体偏移(§6.32)。
  *
  * 隐藏时完全不订阅虚拟播放头,零开销。位置在 TimecodeOsd(top-12)之下,
  * 两者同时开启不重叠。
  */
 
 interface ViewStats {
+  src: string;
+  tpAp: number | null;
   cur: number | null;
   avg: number | null;
   min: number | null;
@@ -90,6 +98,8 @@ function SyncDebugPanel() {
     }
 
     setStats({
+      src: info.src,
+      tpAp: info.tpMinusApMs,
       cur: info.errMs,
       avg,
       min,
@@ -104,9 +114,14 @@ function SyncDebugPanel() {
   return (
     <div className="fixed top-[5.5rem] left-3 z-[400] px-2.5 py-1.5 rounded-md bg-black/80 border border-white/15 font-mono text-[11px] leading-[1.5] text-white/80 pointer-events-none select-none whitespace-pre tabular-nums">
       <div>
+        <span className="text-white/45">src </span>
+        <span className="text-sky-300">{stats.src}</span>
+        <span className="text-white/45">{`  tp−ap ${fmt(stats.tpAp)} ms`}</span>
+      </div>
+      <div>
         <span className="text-white/45">err </span>
         <span className={errColor(stats.cur)}>
-          {stats.cur === null ? "—(暂停)" : `${fmt(stats.cur)} ms`}
+          {stats.cur === null ? "—" : `${fmt(stats.cur)} ms`}
         </span>
       </div>
       <div className="text-white/60">

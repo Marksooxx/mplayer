@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { usePlayerStore } from "../store/playerStore";
 import { useSettingsStore } from "../store/settingsStore";
-import { getPeaks, toDb, type PeaksData } from "../lib/peaks";
+import { audioIndexOf, getPeaks, toDb, type PeaksData } from "../lib/peaks";
 
 /**
  * 文件级 L/R 峰值 + 采样率 / 位深显示
@@ -107,6 +107,8 @@ export function LevelMeter() {
   const currentIndex = usePlayerStore((s) => s.currentIndex);
   const playlist = usePlayerStore((s) => s.playlist);
   const fileLoaded = usePlayerStore((s) => s.fileLoaded);
+  // 与 WaveformStrip 同键：mpv 正在播的那条音轨
+  const audioIndex = usePlayerStore((s) => (s.tracksKnown ? audioIndexOf(s.tracks) : null));
   const [state, setState] = useState<State>({ kind: "idle" });
 
   const path = currentIndex >= 0 ? playlist[currentIndex]?.path : undefined;
@@ -116,13 +118,13 @@ export function LevelMeter() {
       setState({ kind: "idle" });
       return;
     }
-    if (!path || !fileLoaded) {
+    if (!path || !fileLoaded || audioIndex === null) {
       setState({ kind: "idle" });
       return;
     }
     let cancelled = false;
     setState({ kind: "loading" });
-    getPeaks(path, 512)
+    getPeaks(path, audioIndex)
       .then((data) => {
         if (cancelled) return;
         setState({ kind: "ready", data });
@@ -135,7 +137,7 @@ export function LevelMeter() {
     return () => {
       cancelled = true;
     };
-  }, [path, fileLoaded, showLevelMeter]);
+  }, [path, fileLoaded, showLevelMeter, audioIndex]);
 
   if (!showLevelMeter) return null;
 

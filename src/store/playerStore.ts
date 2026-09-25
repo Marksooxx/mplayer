@@ -24,9 +24,22 @@ interface PlayerState {
   selectedIndex: number;
 
   isPlaying: boolean;
+  /** 最近一次由暂停转为播放的本地时刻（performance.now()）；外推 mpv 位置的起点下界 */
+  playingSince: number;
   position: number;
   /** 上一次 setPosition 时的本地时间戳（performance.now()）；用于 rAF 插值 */
   positionObservedAt: number;
+  /**
+   * mpv audio-pts：扣除驱动延迟后"正在响"的音频位置（虚拟播放头的主时钟，§6.32）。
+   * null = 不可用（seek 后音频尚未开始 / 无音轨）；单曲循环回绕尾巴期间为负值。
+   * 不要在 React selector 里订阅它（高频，只给 rAF 读）。
+   */
+  audioPts: number | null;
+  audioPtsObservedAt: number;
+  /** 最近一次 mpv playback-restart 事件到达时刻（seek / 加载完成标记，虚拟播放头用） */
+  restartAt: number;
+  /** 每次 start-file 递增：同路径重载（覆盖后重导出）也能触发波形重取 */
+  loadSeq: number;
   duration: number;
 
   volume: number;
@@ -34,6 +47,8 @@ interface PlayerState {
   speed: number;
 
   tracks: TrackInfo[];
+  /** 本文件的 track-list 已拿到（start-file 清零）；未知时虚拟播放头不按"无音轨"处理 */
+  tracksKnown: boolean;
   currentSid: number | null;
   currentAid: number | null;
 
@@ -59,6 +74,9 @@ interface PlayerState {
 
   setIsPlaying: (v: boolean) => void;
   setPosition: (v: number) => void;
+  setAudioPts: (v: number | null) => void;
+  markRestart: () => void;
+  bumpLoadSeq: () => void;
   setDuration: (v: number) => void;
 
   setVolume: (v: number) => void;
@@ -66,6 +84,10 @@ interface PlayerState {
   setSpeed: (v: number) => void;
 
   setTracks: (t: TrackInfo[]) => void;
+  /** start-file：清空音轨表并标记未知 */
+  resetTracks: () => void;
+  /** file-loaded 主动查询 track-list 之后：即使列表为空也确认已知 */
+  markTracksKnown: () => void;
   setCurrentSid: (v: number | null) => void;
   setCurrentAid: (v: number | null) => void;
 
@@ -98,8 +120,13 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   selectedIndex: -1,
 
   isPlaying: false,
+  playingSince: 0,
   position: 0,
   positionObservedAt: 0,
+  audioPts: null,
+  audioPtsObservedAt: 0,
+  restartAt: 0,
+  loadSeq: 0,
   duration: 0,
 
   volume: 80,
@@ -107,6 +134,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   speed: 1,
 
   tracks: [],
+  tracksKnown: false,
   currentSid: null,
   currentAid: null,
 
@@ -187,16 +215,27 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   setCurrentIndex: (idx) => set({ currentIndex: idx, selectedIndex: idx }),
   setSelectedIndex: (idx) => set({ selectedIndex: idx }),
 
-  setIsPlaying: (v) => set({ isPlaying: v }),
+  setIsPlaying: (v) =>
+    set((s) => ({
+      isPlaying: v,
+      playingSince: v && !s.isPlaying ? performance.now() : s.playingSince,
+    })),
   setPosition: (v) =>
     set({ position: v, positionObservedAt: performance.now() }),
+  setAudioPts: (v) =>
+    set({ audioPts: v, audioPtsObservedAt: performance.now() }),
+  markRestart: () => set({ restartAt: performance.now() }),
+  bumpLoadSeq: () => set((s) => ({ loadSeq: s.loadSeq + 1 })),
   setDuration: (v) => set({ duration: v }),
 
   setVolume: (v) => set({ volume: Math.max(0, Math.min(100, v)) }),
   setMuted: (v) => set({ muted: v }),
   setSpeed: (v) => set({ speed: v }),
 
-  setTracks: (t) => set({ tracks: t }),
+  // 卸载旧文件时 mpv 可能先报一个空列表：空列表不作为"已知"的依据
+  setTracks: (t) => set((s) => ({ tracks: t, tracksKnown: s.tracksKnown || t.length > 0 })),
+  resetTracks: () => set({ tracks: [], tracksKnown: false }),
+  markTracksKnown: () => set({ tracksKnown: true }),
   setCurrentSid: (v) => set({ currentSid: v }),
   setCurrentAid: (v) => set({ currentAid: v }),
 

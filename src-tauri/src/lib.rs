@@ -1,3 +1,4 @@
+mod media_timing;
 mod peaks;
 
 use std::sync::Mutex;

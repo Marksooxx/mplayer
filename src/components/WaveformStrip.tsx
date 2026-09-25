@@ -1,20 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { Loader2 } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import WaveSurfer from "wavesurfer.js";
 import { usePlayerStore } from "../store/playerStore";
 import { seekAbsolute } from "../lib/mpv";
-import { getPeaks } from "../lib/peaks";
+import { audioIndexOf, getPeaks, type PeaksData } from "../lib/peaks";
 import {
-  useCursorAnimation,
-  useVirtualPlayhead,
-} from "../hooks/useCursorAnimation";
+  axisDuration,
+  fracToTime,
+  resamplePeaks,
+  timeToFrac,
+} from "../lib/waveTimeline";
+import { useVirtualPlayhead } from "../hooks/useCursorAnimation";
 
-/** 波形上的播放光标。rAF 驱动 left:%，与 ControlBar 进度条同源同步、丝滑 */
-function WaveformCursor() {
+/**
+ * 波形上的播放光标。rAF 驱动 left:%，与 ControlBar 进度条同一个虚拟播放头；
+ * 横坐标走波形条自己的时间轴（axisRef），与已播放填色、点击 seek 同一映射。
+ */
+function WaveformCursor({ axisRef }: { axisRef: RefObject<number> }) {
   const ref = useRef<HTMLDivElement>(null);
-  useCursorAnimation(ref, (el, p) => {
-    el.style.left = `${p * 100}%`;
+  useVirtualPlayhead((displayed) => {
+    const el = ref.current;
+    if (el) el.style.left = `${timeToFrac(displayed, axisRef.current) * 100}%`;
   });
   return (
     <div
@@ -27,138 +33,194 @@ function WaveformCursor() {
 
 interface Props {
   height?: number;
-  samplesPerPixel?: number;
 }
 
 /**
  * 底部常驻波形条
  * 走 Rust symphonia 离线解码生成 peaks，避免浏览器 Web Audio 解码失败 / 大文件 OOM。
- * mpv 仍是真实音频源；wavesurfer 仅做可视化 + click seek。
+ * mpv 仍是真实音频源；wavesurfer 只当 canvas 绘制器：不传 url（它内部的 <audio>
+ * 没有 src、不加载文件），没有第三个 duration 来源，也不再每帧 seek 媒体元素（§6.32）。
  */
-export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
+export function WaveformStrip({ height = 60 }: Props) {
   const playlist = usePlayerStore((s) => s.playlist);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
   const fileLoaded = usePlayerStore((s) => s.fileLoaded);
   const duration = usePlayerStore((s) => s.duration);
+  const loadSeq = usePlayerStore((s) => s.loadSeq);
+  // mpv 正在播的音轨序号；本文件的音轨表确认之前先不算
+  const audioIndex = usePlayerStore((s) =>
+    s.fileLoaded && s.tracksKnown ? audioIndexOf(s.tracks) : null,
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
+  const [loaded, setLoaded] = useState<{
+    path: string;
+    audioIndex: number;
+    seq: number;
+    data: PeaksData;
+  } | null>(null);
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
-  const [peakDuration, setPeakDuration] = useState(0);
-
-  // rAF tick 通过 ref 读最新 duration，避免 effect 依赖 duration/peakDuration
-  // 而频繁解绑重订阅（失去虚拟播放头的稳定状态）
-  const durationRef = useRef(0);
-  durationRef.current = duration > 0 ? duration : peakDuration;
+  const [widthPx, setWidthPx] = useState(0);
 
   const item = currentIndex >= 0 ? playlist[currentIndex] : null;
   const path = item?.path;
+  // peaks 与路径 / 音轨 / 加载代次绑定：切文件、切音轨、同路径覆盖后重载时，旧 peaks
+  // 不会被画到新加载的时间轴上(加载完成前旧图原样保留，见 effect 4)
+  const pk =
+    loaded &&
+    loaded.path === path &&
+    (audioIndex === null || loaded.audioIndex === audioIndex) &&
+    (!fileLoaded || loaded.seq === loadSeq)
+      ? loaded.data
+      : null;
 
+  // 唯一时间轴：光标 / 填色 / 点击 seek / peaks 摆放共用（rAF 回调经 ref 读最新值）
+  const axis = axisDuration(duration, fileLoaded, pk);
+  const axisRef = useRef(0);
+  axisRef.current = axis;
+  // mpv 时长确认前不接受点击 seek、不画已播放填色（此时的轴只是 peaks 自身长度）
+  const axisConfirmed = fileLoaded && duration > 0;
+  const axisConfirmedRef = useRef(false);
+  axisConfirmedRef.current = axisConfirmed;
+
+  // 1) 取 peaks。依赖 loadSeq：同一路径被覆盖后重导出再打开(§6.31 场景)也会重取；
+  //    同一文件同一音轨的重取静默进行，保留旧波形直到新结果到达(命中缓存时不闪)。
   useEffect(() => {
     let cancelled = false;
-    setFailed(null);
-
-    const cleanup = () => {
-      if (wsRef.current) {
-        try { wsRef.current.destroy(); } catch { /* ignore */ }
-        wsRef.current = null;
-      }
-    };
-
-    if (!path || !containerRef.current) {
-      cleanup();
-      setPeakDuration(0);
+    if (!path) {
+      setLoading(false);
+      setFailed(null);
       return;
     }
-
-    setLoading(true);
-
-    (async () => {
-      try {
-        const data = await getPeaks(path, samplesPerPixel);
+    const prev = loadedRef.current;
+    // 音轨表确认之前不选音轨：同一路径重载时旧图原样保留；新路径先预热首条音轨的
+    // 缓存(绝大多数文件只有一条音轨，确认后命中缓存即可显示)，但不显示
+    if (audioIndex === null) {
+      if (!(prev && prev.path === path)) {
+        setLoading(true);
+        setFailed(null);
+        void getPeaks(path, 0).catch(() => { /* 确认音轨后会按正确序号重取并报错 */ });
+      }
+      return;
+    }
+    const idx = audioIndex;
+    const same = prev !== null && prev.path === path && prev.audioIndex === idx;
+    // 同一文件同一音轨重取(重载)：不显示"解码中"，命中缓存时几毫秒内就有结果
+    if (!same) {
+      setLoading(true);
+      setFailed(null);
+    }
+    getPeaks(path, idx)
+      .then((data) => {
         if (cancelled) return;
-        setPeakDuration(data.duration);
-
-        cleanup();
-        if (!containerRef.current) return;
-
-        const ws = WaveSurfer.create({
-          container: containerRef.current,
-          waveColor: "rgba(255, 255, 255, 0.35)",
-          progressColor: "#6366f1",
-          cursorColor: "rgba(255, 255, 255, 0.85)",
-          cursorWidth: 2,
-          height,
-          barWidth: 2,
-          barGap: 1,
-          barRadius: 2,
-          normalize: true,
-          interact: false, // 我们自己监听 click → mpv seek
-          // 用 Tauri asset 协议给 media 元素，便于 ws 内部用 setTime 推进进度。
-          // 即使 media 解码失败（mkv 等），peaks 已经预渲染，不影响视觉。
-          url: convertFileSrc(path),
-          peaks: [data.peaks],
-          duration: data.duration,
-        });
-        wsRef.current = ws;
-
-        ws.on("error", (err) => {
-          console.warn("[wavesurfer] media error (non-fatal, peaks already rendered)", err);
-        });
-
-        if (cancelled) {
-          ws.destroy();
-          wsRef.current = null;
-          return;
-        }
-
+        setLoaded((cur) =>
+          cur && cur.path === path && cur.audioIndex === idx && cur.seq === loadSeq && cur.data === data
+            ? cur
+            : { path, audioIndex: idx, seq: loadSeq, data },
+        );
         setLoading(false);
-      } catch (err) {
+        setFailed(null);
+      })
+      .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[waveform] peaks calc failed", err);
-        if (!cancelled) {
-          setLoading(false);
-          setFailed(msg);
-        }
-      }
-    })();
-
+        if (cancelled) return;
+        setLoading(false);
+        setFailed(msg);
+      });
     return () => {
       cancelled = true;
-      cleanup();
     };
-  }, [path, height, samplesPerPixel]);
+  }, [path, audioIndex, loadSeq]);
 
-  // 用单例虚拟播放头驱动 wavesurfer 内部光标 + progressColor 填色 —— 跟
-  // ProgressFill/Thumb 完全同帧（144Hz 屏上 ~144 次/秒），消除"波形光标比
-  // 进度条慢"的视觉违和。旧实现走 React useEffect ← position state，受
-  // mpv time-pos 30Hz 上限制约，肉眼能感受到帧率低。
+  // 2) 跟踪容器宽度：每 CSS px 一个时间格
+  const hasItem = !!item;
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0]?.contentRect.width ?? 0);
+      setWidthPx((prev) => (prev === w ? prev : w));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasItem]);
+
+  // 3) wavesurfer 实例：随容器挂载创建，height 变化重建
+  const drawnRef = useRef<PeaksData | null>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ws = WaveSurfer.create({
+      container: el,
+      waveColor: "rgba(255, 255, 255, 0.35)",
+      progressColor: "#6366f1",
+      cursorWidth: 0, // 只保留 <WaveformCursor />，避免两根锚点不同的光标
+      height,
+      barWidth: 2,
+      barGap: 1,
+      barRadius: 2,
+      normalize: true,
+      interact: false, // 我们自己监听 click → mpv seek
+    });
+    wsRef.current = ws;
+    drawnRef.current = null;
+    return () => {
+      wsRef.current = null;
+      try { ws.destroy(); } catch { /* ignore */ }
+    };
+  }, [hasItem, height]);
+
+  // 4) 按时间把 peaks 摆到时间轴上再交给 wavesurfer 画。
+  // 用 load('', …) 而不是 setOptions：7.12.7 的 setOptions 重绘的是旧 audioData。
+  // mpv 时间轴确认前不按猜测的轴画(视频 / 晚起播文件会在 file-loaded 时横向跳一次)：
+  // 同一份 peaks 已经画着就保持(同文件重载不闪)，否则先空着。
+  const axisKey = Math.round(axis * 1000);
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    const axisSecs = axisKey / 1000;
+    if (!pk || !(axisSecs > 0) || widthPx <= 0) {
+      ws.empty();
+      drawnRef.current = null;
+      return;
+    }
+    if (!fileLoaded) {
+      if (drawnRef.current !== pk) {
+        ws.empty();
+        drawnRef.current = null;
+      }
+      return;
+    }
+    const bins = resamplePeaks(pk, axisSecs, widthPx);
+    drawnRef.current = pk;
+    ws.load("", [bins], axisSecs).catch((err) => {
+      console.warn("[waveform] render failed", err);
+    });
+  }, [pk, axisKey, widthPx, height, hasItem, fileLoaded]);
+
+  // 已播放填色：与光标同一个虚拟播放头、同一个 axisRef，逐帧直写 renderer
   useVirtualPlayhead((displayed) => {
     const ws = wsRef.current;
     if (!ws) return;
-    const dur = durationRef.current;
-    if (dur <= 0) return;
-    try {
-      ws.setTime(Math.max(0, Math.min(displayed, dur)));
-    } catch {
-      /* swallow setTime errors when media not ready */
-    }
+    ws.getRenderer().renderProgress(
+      axisConfirmedRef.current ? timeToFrac(displayed, axisRef.current) : 0,
+    );
   });
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
-    const dur = duration > 0 ? duration : peakDuration;
-    if (dur <= 0) return;
+    const axisSecs = axisRef.current;
+    if (!axisConfirmedRef.current || axisSecs <= 0) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const target = ratio * dur;
-    void seekAbsolute(target);
+    void seekAbsolute(fracToTime((e.clientX - rect.left) / rect.width, axisSecs));
   };
 
   if (!item) return null;
-  // 进度光标已交给 <WaveformCursor /> 内部 rAF 驱动；duration / peakDuration
-  // 仅在 handleClick (上面已用 closure 引用) 内使用
 
   return (
     <div
@@ -175,7 +237,7 @@ export function WaveformStrip({ height = 60, samplesPerPixel = 512 }: Props) {
       {/* 与 containerRef 同一区域的光标层：rAF 子组件接管，不依赖父组件 progress 变化重渲染 */}
       {!loading && !failed && fileLoaded && (
         <div className="absolute inset-x-4 inset-y-0 pointer-events-none">
-          <WaveformCursor />
+          <WaveformCursor axisRef={axisRef} />
         </div>
       )}
       {loading && (
