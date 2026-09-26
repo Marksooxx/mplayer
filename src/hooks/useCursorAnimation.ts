@@ -22,7 +22,7 @@ export type { PlayheadDebugInfo };
  * 单例模式:整个 app 只有一个 rAF tick 推进 displayed,无论多少 cursor
  * 订阅,所有订阅者绝对同步。父组件重渲染不会触动模块级状态。(§6.22)
  *
- * 时钟算法(audio-pts 从动 / 陈旧度补偿 / PLL 微调 / 暂停不自动修正)在
+ * 时钟算法(audio-pts 从动 / 陈旧度补偿 / PLL 微调 / 暂停只在用户操作与视频停帧时移动)在
  * lib/playheadClock.ts(纯逻辑,可离线回放测试);这里只负责 rAF 与订阅者分发。
  * tick 用 rAF 回调的帧时间戳而非 performance.now():同一帧所有订阅者共用
  * vsync 对齐的时刻,dt 不带回调排队抖动。(§6.32)
@@ -48,6 +48,11 @@ function tick(ts: number): void {
       // 以 track-list 的 selected 为准(start-file 清空、file-loaded 刷新，不跨文件残留)；
       // 音轨表未知(加载中)时为 null，不能当成"无音轨"提前解除钉住
       hasAudio: s.tracksKnown ? s.tracks.some((t) => t.type === "audio" && t.selected) : null,
+      // 真正的视频画面(封面图 / 静态图不算)：暂停时光标对齐到屏幕停住的那一帧(§6.33)
+      hasVideo: s.tracksKnown
+        ? s.tracks.some((t) => t.type === "video" && t.selected && !t.albumart && !t.image)
+        : null,
+      eof: s.eofReached,
       speed: s.speed,
       duration: s.duration,
       dragPosition: s.dragPosition,

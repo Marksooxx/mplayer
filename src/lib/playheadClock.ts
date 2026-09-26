@@ -38,9 +38,16 @@
  * 变速时 mpv 时钟会真实回退一小段（实测 1→1.5 倍约 146ms），下一次观测直接 snap。
  * 单曲循环时 displayed 与误差都按 duration 取模，回绕处连续无停顿。
  *
- * ★ 暂停不自动修正（§6.22）★
- * 暂停瞬间 mpv 报的位置会多方向浮动，任何自动 snap 都会让光标抖；暂停时只在
- * 用户操作（op）后跟随 position 回报；长时间无 rAF（后台）后恢复也保持原值。
+ * ★ 暂停：只在少数情况下移动光标（§6.22 / §6.33）★
+ * 暂停中不按 mpv 的回报自动修正（暂停后纯音频的 audio-pts 会变成 AO 缓冲虚值，跟着它
+ * 光标会抖）：只在用户操作（op）后跟随 position 回报；长时间无 rAF（后台）后恢复也保持原值，
+ * 除非停滞期间由播放转为暂停（停滞前的光标已过时，取最新 time-pos）。
+ * 例外：有视频画面时，播放中按暂停，光标对齐到屏幕停住的那一帧。mpv 会把已排进 VO 队列的
+ * 帧照常显示出来，这一帧就是暂停时最新的 time-pos，比暂停瞬间的声音位置超前 1–3 帧
+ * （实测 48/48，24/30/60fps；暂停之后 mpv 不再报 time-pos）。事件可能被乱序转发，
+ * 所以暂停时连同播放中缓存的回报、暂停后 PAUSE_FRAME_WINDOW_MS 内取相容回报中最靠后的一条
+ * (EOF 自动暂停例外：之后报来的是音频尾巴，只认暂停那一刻)。恢复播放时声音从暂停
+ * 位置接着响，光标原地等声音追上这一帧再走（推断画面也会停到那时，未取帧验证），不倒退。
  */
 
 export interface ClockInput {
@@ -56,6 +63,10 @@ export interface ClockInput {
   restartAt: number;
   /** 当前选中了音轨（aid ≠ no）；null = 本文件的音轨表还没拿到（加载中），不能当"无音轨" */
   hasAudio: boolean | null;
+  /** 当前选中了真正的视频轨（封面图 / 静态图不算）；null = 音轨表未知。只有 true 时暂停才对齐画面帧 */
+  hasVideo?: boolean | null;
+  /** mpv eof-reached(keep-open 播到结尾会随之自动暂停) */
+  eof?: boolean;
   speed: number;
   duration: number;
   /** 进度条拖动中的目标位置 */
@@ -124,6 +135,36 @@ export const TARGET_FALLBACK_MS = 300;
 /** 解除钉住后这段时间内，新观测偏差超过 POST_RELEASE_SNAP_S 直接对齐(不慢慢 slew) */
 export const POST_RELEASE_WINDOW_MS = 500;
 export const POST_RELEASE_SNAP_S = 0.03;
+/**
+ * 有视频时，播放中暂停后这段时间内光标对齐到 time-pos(屏幕停住的帧)；之后不再跟随。
+ * 暂停后 mpv 不再报 time-pos，窗口只为兜住乱序转发(暂停前刚产生的回报晚于 pause 到达)。
+ */
+export const PAUSE_FRAME_WINDOW_MS = 150;
+/**
+ * 暂停帧与暂停瞬间光标的最大距离(×max(1, speed))：正常是 1–3 帧(≤ 约 85ms)。更远的回报
+ * 不属于这次暂停(事件停更、1Hz poll 兜底的陈旧值等)，不吸附，保持原位置。
+ */
+export const PAUSE_FRAME_MAX_S = 0.3;
+/**
+ * 暂停帧允许落后于暂停瞬间光标的量(×max(1, speed))。有音轨时光标 = 声音位置，屏幕帧只会超前
+ * (实测 0–3 帧)，只容事件链延迟；无音轨时光标按 time-pos 外推，会越过最后一帧 ≤1 帧。更靠后的
+ * 是乱序晚到的旧值(到达顺序 ≠ 产生顺序)，不采用。
+ */
+export const PAUSE_FRAME_BEHIND_S = 0.05;
+export const PAUSE_FRAME_BEHIND_NOAUDIO_S = 0.1;
+/** 播放中保留的最近 time-pos 条数(暂停停帧候选；0.3s 内 60fps 约 18 条) */
+export const RECENT_POS_MAX = 32;
+/**
+ * op 结束 / 变速之后这么久内不往缓存收回报：此时乱序晚到的可能是跳变之前的旧值，
+ * 数值上可能比新值更"靠后"(小幅向后 seek、变速回退)，取最大值会选错。缓存只用于稳定
+ * 播放；静默期内退回只看 store 当前值。
+ */
+export const RECENT_POS_QUIET_MS = 300;
+/**
+ * 恢复播放后等声音追上暂停帧：声音从暂停位置接着响，但起播本身还有 10–50ms 延迟，所以不按
+ * 超前量定时，而是等恢复之后的 audio-pts 追上这一帧；超过 超前量/speed + 这么久仍没追上就放弃。
+ */
+export const RESUME_HOLD_SLACK_MS = 150;
 
 export interface PlayheadClock {
   /** 推进一帧；返回本帧 displayed（秒） */
@@ -189,6 +230,25 @@ export function createPlayheadClock(): PlayheadClock {
   let speedChangedAt = -Infinity;
   let resyncAfterResume = false; // 恢复播放后的首个新观测：光标落后则直接向前对齐
   let postReleaseUntil = 0; // 解除钉住后的快速对齐窗口
+  // —— 暂停停帧(§6.33) ——
+  let pauseFrameUntil = 0; // 暂停后对齐画面帧的窗口截止
+  let pauseFrameArmedAt = 0;
+  let pauseFrameFrom = 0; // 暂停瞬间的光标(= 声音位置)
+  let pauseFrameLead: number | null = null; // 已对齐的帧相对 pauseFrameFrom 的超前量(s)
+  // 暂停这一刻(含播放中缓存的回报)的最佳候选：EOF 时退回它，不跟随之后报来的音频尾巴
+  let pauseFrameAtArm: { pos: number; d: number } | null = null;
+  let resumeHoldUntil = 0; // 恢复播放后原地等声音追上暂停帧，最迟到这个时刻
+  // 播放中(无 op)到达的最近 time-pos：store 只留最后到达的一条，乱序晚到的旧值会盖掉更新的值；
+  // 暂停时从这里和 store 当前值中取与暂停瞬间光标相容的最靠后一条
+  let recentPos: { pos: number; at: number }[] = [];
+  let recentPosQuietUntil = 0;
+
+  function clearPauseFrame(): void {
+    pauseFrameUntil = 0;
+    pauseFrameLead = null;
+    pauseFrameAtArm = null;
+    resumeHoldUntil = 0;
+  }
 
   // —— 调试统计 ——
   let dbgSrc: ClockSource = "paused";
@@ -244,13 +304,42 @@ export function createPlayheadClock(): PlayheadClock {
     const positionObsNew = inp.positionObservedAt !== lastPositionObs;
     if (positionObsNew) lastPositionObs = inp.positionObservedAt;
 
-    if (lastSpeed !== null && inp.speed !== lastSpeed) speedChangedAt = now;
+    if (lastSpeed !== null && inp.speed !== lastSpeed) {
+      speedChangedAt = now;
+      recentPos = []; // 变速时 mpv 时钟会回退一小段，之前的回报不再是"最靠后"
+      recentPosQuietUntil = now + RECENT_POS_QUIET_MS;
+    }
     lastSpeed = inp.speed;
+    const hadOp = op !== null;
+
+    // 稳定播放中(无 op、不在 op 结束 / 变速后的静默期)缓存到达的 time-pos(暂停停帧候选)
+    if (positionObsNew && playing && op === null && inp.dragPosition === null && now >= recentPosQuietUntil) {
+      recentPos.push({ pos: inp.position, at: inp.positionObservedAt });
+      if (recentPos.length > RECENT_POS_MAX) recentPos.shift();
+    }
 
     // 恢复播放的瞬间:记录外推起点下界(此前的暂停时长不属于媒体时钟)
     if (!wasPlaying && playing) {
       playStartedAt = now;
       resyncAfterResume = op === null;
+      // 暂停时对齐到了超前的画面帧：声音从暂停位置接着响，原地等它追上这一帧
+      const lead = op === null && inp.hasAudio === true ? (pauseFrameLead ?? 0) : 0;
+      clearPauseFrame();
+      if (lead > 0) {
+        resumeHoldUntil = now + (lead / Math.max(inp.speed, 0.01)) * 1000 + RESUME_HOLD_SLACK_MS;
+      }
+    }
+    if (wasPlaying && !playing) {
+      clearPauseFrame();
+      if (op === null && inp.dragPosition === null && inp.hasVideo === true && displayed !== null) {
+        pauseFrameArmedAt = now;
+        pauseFrameUntil = now + PAUSE_FRAME_WINDOW_MS;
+        pauseFrameFrom = displayed;
+      }
+    }
+    if (inp.dragPosition !== null) {
+      clearPauseFrame();
+      recentPos = [];
     }
 
     let err: number | null = null;
@@ -266,9 +355,20 @@ export function createPlayheadClock(): PlayheadClock {
       displayed = playing ? (target(inp, now).value ?? inp.position) : inp.position;
       lastTick = now;
     } else if (now - lastTick > 1000) {
-      // 长时间停滞(tab 后台/睡眠/最小化)后恢复:播放中直接对齐；暂停中保持原值
-      // (§6.22：暂停时 mpv 的位置不可信，只有用户操作才能移动光标)
+      // 长时间停滞(tab 后台/睡眠/最小化)后恢复:播放中直接对齐；一直暂停则保持原值
+      // (§6.22：暂停时 mpv 的位置不可信，只有用户操作才能移动光标)。停滞期间由播放转为
+      // 暂停：停滞前的光标已过时数秒，取停滞期间报来的最新 time-pos
       if (playing && !op) displayed = target(inp, now).value ?? inp.position;
+      else if (!playing && wasPlaying && !op && inp.positionObservedAt > lastTick) {
+        // EOF 时最新值可能是超出时长的音频尾巴，按时长钳制
+        displayed = inp.duration > 0 ? Math.min(inp.position, inp.duration) : inp.position;
+        if (pauseFrameUntil > 0) {
+          pauseFrameFrom = displayed;
+          pauseFrameLead = 0;
+          pauseFrameAtArm = { pos: displayed, d: 0 };
+        }
+      }
+      resumeHoldUntil = 0;
       lastTick = now;
     } else {
       const dt = (now - lastTick) / 1000;
@@ -312,6 +412,48 @@ export function createPlayheadClock(): PlayheadClock {
           dbgSnapCount += 1;
         }
       }
+
+      // —— 暂停停帧 ——
+      // 暂停后窗口内：time-pos(最近 PAUSE_FRAME_MAX_S 内到达、与暂停瞬间光标相容)就是
+      // 屏幕停住的帧；取最靠后的一条(播放中 time-pos 单调递增，用户暂停后 mpv 不再报)。
+      // 暂停那一刻连同播放中缓存的回报一起考虑：乱序晚到的旧值盖掉 store 也不影响
+      if (!playing && !op && now <= pauseFrameUntil) {
+        const k = Math.max(1, inp.speed);
+        const behind = (inp.hasAudio === true ? PAUSE_FRAME_BEHIND_S : PAUSE_FRAME_BEHIND_NOAUDIO_S) * k;
+        const consider = (pos: number, at: number): void => {
+          if (at < pauseFrameArmedAt - PAUSE_FRAME_MAX_S * k * 1000) return; // 太旧
+          if (inp.duration > 0 && pos > inp.duration) return; // 超出时长的是音频尾巴，不是画面帧
+          let d = pos - pauseFrameFrom;
+          if (inp.loopFile && inp.duration > 0) d = wrapErr(d, inp.duration);
+          if (d < -behind || d > PAUSE_FRAME_MAX_S * k) return; // 不属于这次暂停
+          if (pauseFrameLead === null || d > pauseFrameLead) {
+            displayed = pos;
+            pauseFrameLead = d;
+            dbgSnapCount += 1;
+          }
+        };
+        if (now === pauseFrameArmedAt) {
+          for (const r of recentPos) consider(r.pos, r.at);
+          consider(inp.position, inp.positionObservedAt);
+          pauseFrameAtArm = pauseFrameLead === null ? null : { pos: displayed, d: pauseFrameLead };
+        } else if (positionObsNew) {
+          consider(inp.position, inp.positionObservedAt);
+        }
+        if (inp.eof) {
+          // EOF 自动暂停：之后 mpv 还会报音频尾巴(实测比末帧多 46ms、超出 duration)。退回暂停
+          // 那一刻的最佳候选(= 末帧)并关窗；pause 先于 eof-reached 到达的乱序同样处理
+          if (pauseFrameAtArm) {
+            displayed = pauseFrameAtArm.pos;
+            pauseFrameLead = pauseFrameAtArm.d;
+          } else if (pauseFrameLead !== null) {
+            // 暂停那一刻没有合格候选：撤回窗口内采用的(尾巴)值，回到暂停瞬间的光标
+            displayed = pauseFrameFrom;
+            pauseFrameLead = null;
+          }
+          pauseFrameUntil = 0;
+        }
+      }
+      if (!playing) recentPos = [];
 
       if (playing) {
         const opActive = op !== null;
@@ -368,8 +510,27 @@ export function createPlayheadClock(): PlayheadClock {
           }
         }
 
-        if (op) {
-          src = "hold"; // 钉在落点，不走
+        // 恢复播放后等声音追上暂停帧：只认恢复之后的音频观测(暂停中的 audio-pts 是 AO 缓冲虚值)
+        let waitAudio = false;
+        if (!op && resumeHoldUntil > 0) {
+          const t =
+            audioValidNow && inp.audioPtsObservedAt > playStartedAt ? target(inp, now).value : null;
+          let d = t === null ? -Infinity : t - displayed;
+          if (t !== null && inp.loopFile && inp.duration > 0) d = wrapErr(d, inp.duration);
+          if (t !== null && d >= 0) {
+            displayed = t; // 追上了：从这里跟着声音走(向前，至多一个观测间隔)
+            alignedThisFrame = true;
+            resyncAfterResume = false;
+            resumeHoldUntil = 0;
+          } else if (now >= resumeHoldUntil) {
+            resumeHoldUntil = 0; // 迟迟没追上：交回常规外推 / 微调
+          } else {
+            waitAudio = true;
+          }
+        }
+
+        if (op || waitAudio) {
+          src = "hold"; // 钉在落点 / 暂停帧，不走
         } else {
           const tg = target(inp, now);
           src = tg.src;
@@ -432,6 +593,7 @@ export function createPlayheadClock(): PlayheadClock {
     }
 
     wasPlaying = playing;
+    if (hadOp && op === null) recentPosQuietUntil = now + RECENT_POS_QUIET_MS;
 
     // —— 调试 ——
     const usingAudio = src === "audio" || src === "hold" || src === "coast";
@@ -456,6 +618,8 @@ export function createPlayheadClock(): PlayheadClock {
     forceSnap(now: number, awaitRestart = true, target: number | null = null) {
       op = { at: now, awaitRestart, target, lastApplied: -1, landed: false, rejectedAudioObs: -1 };
       lastOpAt = now;
+      clearPauseFrame();
+      recentPos = [];
     },
     reset() {
       displayed = null;
@@ -471,6 +635,9 @@ export function createPlayheadClock(): PlayheadClock {
       speedChangedAt = -Infinity;
       resyncAfterResume = false;
       postReleaseUntil = 0;
+      clearPauseFrame();
+      recentPos = [];
+      recentPosQuietUntil = 0;
       dbgErrMs = null;
       dbgTpAp = null;
     },

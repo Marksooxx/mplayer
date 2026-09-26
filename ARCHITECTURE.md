@@ -621,6 +621,8 @@ symphonia = { version = "0.5", features = ["all"] }        # 全 codec
 
 任何"自动 snap 到 mpv `position`"的逻辑都会跟着这种浮动抖动。修复 A 的 `SEEK_THRESHOLD_PAUSED=5ms` 自动 snap 就吃了 root cause B 的亏——把 cursor 拽回 mpv 报的"略后位置"。
 
+**更正(§6.33)**:上面两条"浮动"在当前 mpv(v0.41)+ gpu-next 上没有复现——48 次实测暂停后 mpv 不再报任何 time-pos,屏幕停住的正是暂停前最后一条 time-pos 那一帧。现在有视频画面时,暂停后光标会对齐这一帧;纯音频仍按下面的修复 B 不自动修正。
+
 **修复 B**：暂停时**完全不自动 snap**。只在用户主动操作（`seek*` / `frameStep*` / `loadFile`）时由调用方显式调 `forcePlayheadSnap()` 触发一次性 snap。`mpv.ts` 内所有这些函数前都加了这一行：
 
 ```ts
@@ -891,7 +893,7 @@ mpv 解码到文件末尾
   - 回绕等内部原因 audio-pts 短暂为 null → **coast**(按 dt 惯性前进、不修正);回绕尾巴的负值 + duration;单曲循环时 displayed 与误差都按 duration 取模(op 钉住期间不取模);audio-pts 播放中 >600ms 不更新视为停更,退回 time-pos(1Hz poll 兜底)。
   - 变速后首个新观测直接 snap;恢复播放后首个新观测若光标落后则一步追上(只向前)。
   - 无音轨 / aid=no:退回 time-pos 外推(旧行为)。
-  - `useMpv`:start-file 时 duration 归零、audioPts 置 null、tracks 清空、`loadSeq` 递增;file-loaded 的兜底查询(pause / time-pos / duration / track-list / aid)落地前核对 loadSeq;1Hz poll 只在事件链沉默 >500ms 时触发,请求在途期间 position / audio / restart / loadSeq 任一变化则作废。
+  - `useMpv`:start-file 时 duration 归零、audioPts 置 null、tracks 清空、`loadSeq` 递增;file-loaded 的兜底查询(pause / time-pos / duration / track-list / aid)落地前核对 loadSeq(track-list 必须按 string 取再 JSON.parse,node 格式会让 App 崩溃,见 §6.34);1Hz poll 只在事件链沉默 >500ms 时触发,请求在途期间 position / audio / restart / loadSeq 任一变化则作废。
 - 波形(`src-tauri/src/peaks.rs` + `media_timing.rs`,前端 `src/lib/waveTimeline.ts`):
   - 流式分桶(不再整文件样本常驻内存),每桶 16 帧起,满 16384 桶时相邻合并、帧数翻倍;
   - 返回 `startTime`(解码第 0 帧在 mpv 时间轴上的秒数):MP4 elst;MKV = 音轨首包 − 首个 Cluster 的 Timestamp(mpv demux_mkv 的 `probe_first_timestamp` 就以它为 start_time)− CodecDelay,Info / Tracks 排在 Cluster 之后时按 SeekHead 跳过去读;裸 MP3 = −LAME delay。**不开** `enable_gapless`:无 Xing 头的 MP3 会按估算帧数截尾 26ms,而 mpv 不截;
@@ -929,6 +931,68 @@ mpv 解码到文件末尾
 - 画在屏幕上的数据必须带自己的时间轴(起点 + 每点时长),不能靠"数组铺满宽度"与另一条时间轴碰巧对齐。
 - 合成测试要按真实事件序列造:帧步进的 pause 0→1 翻转、frame-back-step 落点晚于 restart、暂停 seek 后的 AO 虚值,都是只看文档推不出来、必须录下来才知道的。
 
+### 6.33 暂停时光标停在哪 —— 屏幕停住的是 time-pos 那一帧,比声音超前 1–3 帧
+
+**问题**:声音连续、画面离散(24fps 每帧占 41.7ms),两者同步时数值本来就差 0 到 1 帧,光标只能代表其中一个。§6.32 之后播放中光标 = 声音位置;暂停中单帧步进 / seek 后光标 = mpv 报的帧;唯独**播放中按暂停**时光标停在"按下那一刻的声音位置"(§6.22 暂停不自动修正),与屏幕上的帧对不上,时间码 OSD 的帧号(`round(t × fps)`)也因此可能比画面多 1。决定:有视频画面时,暂停后光标对齐屏幕停住的那一帧。
+
+**实测**(`dev-tools/sync/probes/pause_frame.py`;libmpv v0.41.0-671,`vo=gpu-next`、`hwdec=auto-safe`、`ao=wasapi`,RTX 4060 Ti):画面编码了帧号的测试视频,播放中随机时刻暂停,800ms 后用 `PrintWindow(PW_RENDERFULLCONTENT)` 取 DWM 合成的窗口内容解码帧号(锁屏 / 被遮挡也可测;直接截屏在锁屏时截到的是锁屏界面)。24 / 30 / 60fps 各 16 次,共 48 次:
+
+- 屏幕停住的帧 = 暂停时最新的 time-pos 所在帧:48/48。mpv 自己的 `screenshot video` 与 `estimated-frame-number` 同样 48/48 一致。
+- 屏幕帧 − 暂停瞬间声音位置所在帧:24fps {0:1, +1:13, +2:2};30fps {+1:13, +2:3};60fps {+1:1, +2:9, +3:6}。即超前约 20–50ms,与 §6.32 测得的 time-pos 超前量一致:已排进 VO 队列的帧在暂停后照常显示出来。
+- 暂停命令之后 mpv **一次 time-pos 都不再报**(48/48;`ppause24/60` 录制同样如此),暂停前最后一条就是终值。audio-pts 则在暂停后 70–170ms 跳成 AO 缓冲虚值(约等于已写入的 pts),所以暂停中仍不能用它。
+- 播放中取样:屏幕帧通常比 time-pos 所在帧早 1 帧(time-pos 是已入队、尚未显示的帧)。
+- EOF(keep-open 自动暂停)不同:末帧 11.95833 → `eof-reached` → pause 同时报 11.95905 → 126ms 后又报音频尾巴 12.0045(超出 duration 12.0);屏幕停在末帧。即"暂停后不再报 time-pos"只对用户暂停成立。
+
+**更正 §6.22 根因 B**:"暂停瞬间先报几条略前的 time-pos、再回退一帧"在当前 mpv + gpu-next 上没有复现(暂停后没有任何 time-pos 事件)。当年的观察很可能混有同期的根因 A(每秒 30 次重置 displayed),无法再核实。§6.22"只有用户操作才移动光标"对纯音频仍然成立(暂停后的 audio-pts / time-pos 是 AO 虚值)。
+
+**实现**(`playheadClock.ts`,输入新增 `hasVideo` = 选中了真正的视频轨,`albumart` / `image` 轨不算,音轨表未知时为 null)
+
+- 暂停停帧:播放 → 暂停且无 op、未拖动、`hasVideo === true` 时,暂停后 `PAUSE_FRAME_WINDOW_MS`(150ms)内把光标对齐到 time-pos。只接受暂停前 `PAUSE_FRAME_MAX_S`(0.3s × max(1, speed))内到达、且相对暂停瞬间光标 超前 ≤ 0.3s、落后 ≤ `PAUSE_FRAME_BEHIND_S`(有音轨 50ms,无音轨 100ms,× max(1, speed))的回报——有音轨时屏幕帧只会超前于声音,更靠后的是乱序晚到的旧值(到达顺序 ≠ 产生顺序)。候选不止 store 当前值:**稳定播放**中(无 op,且不在 op 结束 / 变速后 `RECENT_POS_QUIET_MS` 300ms 静默期内)到达的 time-pos 缓存最近 32 条(`RECENT_POS_MAX`),暂停那一刻连同缓存一起取相容的最靠后一条——store 只留最后到达的一条,乱序晚到的旧值会盖掉更新的值,缓存让它盖不掉。静默期的理由:刚发生跳变时晚到的可能是跳变之前的旧值,数值上反而更"靠后"(小幅向后 seek、变速回退),取最大值会选错,所以这段时间只看 store 当前值。超出 duration 的值不当候选(那是音频尾巴)。窗口内再到的回报(暂停前刚产生、晚于 pause 到达)同样取最靠后。窗口之后不再跟随。单曲循环按环形距离算。变速、op、拖动清空缓存。
+- EOF:输入新增 `eof`(store 镜像 mpv `eof-reached`;start-file 回调里同步清零)。窗口内一见 eof 就退回"暂停那一刻(含缓存)的最佳候选"= 末帧并关窗,不跟随随后的音频尾巴;pause 先于 eof 到达、尾巴又先于 eof 到达的乱序下同样退回;暂停那一刻没有合格候选时撤回到暂停瞬间的光标。上一个文件的 `eof-reached=true` 不会晚于新文件到达:App 里下一个文件正是由这条事件触发 `handleEof` 加载的;晚到的只可能是清除(false / unavailable)。
+- 后台停滞(>1s 无 rAF)期间由播放转为暂停:停滞前的光标已过时数秒,改取停滞期间报来的最新 time-pos,按 duration 钳制(EOF 时它可能是超出时长的音频尾巴)。**对所有文件生效,包括纯音频**——此前停在停滞前的位置(与本节改动无关的旧缺口,顺带补上);纯音频暂停后的 time-pos 可能带 AO 缓冲偏差(约 ±0.2s),仍远好于停在数秒前。
+- 恢复等声:声音从暂停位置接着响,比光标(画面帧)晚 1–3 帧。恢复播放后光标原地不动,直到**恢复之后**的 audio-pts(外推)追上这一帧再跟着走;最迟 超前量/speed + `RESUME_HOLD_SLACK_MS`(150ms)后交回常规逻辑。不按超前量定时:声音起播本身还有 10–50ms 延迟,定时放开会领先声音约 10ms 再慢慢追。推断画面在声音追上之前也停在这一帧(恢复后下一帧要等音频时钟到它的 pts 才上屏),未做恢复阶段的取帧验证。无音轨时不等待(光标本来就跟 time-pos)。
+- 暂停中 seek / 帧步进 / 拖动 / 切文件都会清掉停帧状态,交给 op 逻辑。
+
+**验证**
+
+- `clock/steps.test.ts` 新增 `ppause24 / ppause60`(`vo=gpu-next ao=wasapi` 真实 VO 录制,各暂停 / 恢复 3 次):6 次暂停后光标都精确等于 time-pos;恢复 380ms 后与声音相差 −6.5~+7.4ms(这是参照值本身的抖动:mpv 刚起播时 audio-pts 增长不均匀);没有倒退。新增通用断言"恢复播放的第一帧不倒退",原有 7 个录制照常通过。
+- `clock/edge.test.ts` 新增 P1–P11:暂停对齐、乱序取最靠后、窗口外不跟、陈旧 / 过远不吸附、纯音频与音轨表未知不吸附、恢复等声再走、声音不来时超时、吸附后 seek、op 进行中暂停、无音轨视频、单曲循环回绕处暂停。
+- `clock/edge.test.ts` P12–P20(codex 三轮交叉评审给出的反例 + EOF 实测序列):乱序晚到的旧 time-pos 不把光标拉回(大幅旧值 / 落后界以内的旧值 / 单曲循环上一圈的旧值)、小幅向后 seek 刚结束时迟到的旧高值与变速同帧的旧高值不被选中、后台期间暂停取最新 time-pos、EOF 停在末帧(eof 先到 / pause 先到 / 尾巴先于 eof / 暂停时无候选)。都做过变异检查:撤掉缓存候选则 P4 / P15 / P16 失败,撤掉 op / 变速静默期则 P18 / P19 失败,撤掉时长上限或 eof 撤回则 P20 失败,撤掉 EOF 退回则 P17 失败,撤掉落后界 / 后台处理则 P12 / P13 失败。`steps.test.ts` 的 KNOWN 只对 `ppause24` 开头 1s 内、单次回退 ≤0.4s、至多 1 次的倒退开放,其余照常判失败。
+- App 端到端(debug 构建;WebView2 远程调试端口 + CDP 发空格暂停、读时间码 OSD;`PrintWindow` 取顶层窗口,按 mpv `osd-dimensions` 的边距裁出视频区解码帧号;24fps 帧号编码视频、静音音轨、单曲循环,测试前后备份 / 还原 store.json):改后 16/16 暂停 OSD 帧号 = 屏幕帧,光标时间精确落在帧 pts(含循环回绕后 2 次);同一脚本跑改前构建 8/16,光标比屏幕帧起点早 0.2–1 帧。
+- `clock/replay.test.ts` 对 mp4 场景传入 `hasVideo`:"mp4 暂停/恢复"恢复后 1.5s 误差 p95 8.7 → 0.5ms、max 10.2 → 3.5ms(等声取代了 −10% 慢追);其余 12 项指标逐字不变。
+
+**限制 / 未测**
+
+- 只测了本机 gpu-next + d3d11 硬解;`vo=gpu` 回退路径、其他显卡 / 驱动、`video-sync=display-*` 未测。`PrintWindow` 取的是 DWM 合成内容,不是显示器扫描输出(暂停 800ms 后两者应一致,未用摄像实测)。
+- 事件到达顺序 ≠ 产生顺序,插件没有序号,所以"哪条回报属于这次暂停"只能靠数值与到达时间推断,总有构造得出的反例;所有反例都要求某条回报比同批回报晚到数十 ms 以上。已知残余:正确的那一条晚于窗口(150ms)才到,或同一 rAF 帧内先后到达(store 只留最后一条,缓存也只见到它),会停在较早的帧(落后界内最坏约 超前量 + 落后界,60fps 有音轨约 5 帧);op 结束 / 变速后 300ms 内暂停时只看 store 当前值,不受缓存保护;EOF 时若末帧回报晚于 pause 与 eof 到达,停在倒数第二帧;后台停滞跨越 EOF 时停在 duration(比末帧多约 1 帧,与改前一致)。根治需要事件源带序号(插件层)。
+- 恢复等声超时(超前量/speed + 150ms)之后交回常规逻辑,若 store 里是暂停期间的 audio-pts 且远落后于光标(>0.3s),会硬 snap 回退(codex 构造;实测暂停后的虚值都是超前的,未见真实 mpv 出现;不加本节改动时同样会回退)。暂停中改速度、恢复后音频又迟到 >150ms 时,等声超时后光标先按外推前进,变速后的首条新观测再按原规则硬对齐,回退可超过超前量(codex 构造例:超前 40ms、回退 128ms;与下文"开播停顿"同属"mpv 实际没在走、时钟仍在外推"一类)。所以"恢复不倒退"只在恢复后音频按时(超前量/speed + 150ms 内)出声时成立。
+- 超前量 > 0.3s × speed 的情形(帧率约 5fps 以下的视频)不吸附,保持暂停瞬间位置。
+- 时间码 OSD 的帧号仍是 `round(t × fps)`:暂停后光标就是帧 pts,显示正确;播放中约一半时间比画面多 1(每帧都在变,肉眼不可辨),未改。可变帧率视频按 fps 换算的帧号本来就只是近似。
+
+**顺带发现(未修)**:开播停顿时光标外推过头。`ppause24` 录制中 mpv 在首个 playback-restart 后约 400ms 没有任何回报(推测是真实 VO 首帧上屏;这期间 audio-pts 只走了 33ms,即声音也没在走)。op 在首条 audio-pts 就解除,之后按"声音在走"外推到 0.39,新回报一到硬 snap 回 0.03(倒退 359ms)。`vo=null` 的录制和 `ppause60` 没有这段停顿,在 App 里出现得多频繁需验证。可能的修法:解除钉住要求音频时钟确实在前进(第二条观测比第一条多走若干 ms),代价是每次 seek 后多钉一个观测间隔(15–50ms)再向前对齐。`steps.test.ts` 把这一次倒退单列为 KNOWN(限定录制、时间窗、幅度与次数),不判失败。
+
+**交叉评审**:codex(gpt-6-sol / xhigh,只读)两轮。第一轮 6 条:乱序旧值、后台暂停、EOF、测试口径四条已修;"等声超时后被暂停期旧 audio-pts 拉回""暂停中变速 + 音频迟到"两条列为上面的限制。第二轮对前者逐条复核为 PARTIAL,补出落后界内旧值、单曲循环上一圈旧值、EOF 尾巴先于 eof、eofReached 跨文件残留、纯音频后台暂停行为变化、KNOWN 次数不限、端到端脚本无退出码等,已按上文处理(纯音频后台暂停的行为变化保留并写明)。第三轮指出缓存本身的副作用(跳变后迟到的旧高值被取为最大值)、EOF 暂停时无候选、后台跨 EOF 停在 duration,前两者已修(静默期、时长上限、eof 撤回),后者列入残余;其"上一个文件的 eof=true 晚到"经 App 事件流程核对不成立(见 EOF 条)。它没有运行端到端脚本(会改 App 设置),16/16 与 8/16 为本机实测。
+
+**经验教训**
+
+- "同步"不等于"数值相等":连续量(声音)和离散量(画面帧)只能在格子意义上对齐,光标代表哪一个要显式选,并且对 UI 上每个读数(光标、帧号)说清楚。
+- 屏幕上显示什么,要从合成器拿真值(PrintWindow / DWM),不能从引擎的内部状态推;锁屏时屏幕截图会静默地截到锁屏界面,必须先检查截到的内容。
+- 历史文档里的"根因"也要复测:§6.22 的"回退一帧"在当前版本上不存在,照着它设计会多出不必要的防御。
+
+### 6.34 打开任何文件即崩溃 —— `get_property(track-list, "node")` 让 libmpv-wrapper 访问冲突
+
+**现象**:§6.32(8b630cc)之后的构建,打开任何文件(命令行参数、单实例转发、播放列表均同)约 40ms 后进程以 0xC0000005 退出,没有日志、没有 WER 记录。无参数启动正常。
+
+**定位**:WebView2 远程调试端口(`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=N`)+ CDP 包一层 `window.fetch` 记录每个 IPC(`__TAURI_INTERNALS__.invoke` 不可写,Tauri 2 在 Windows 上的 IPC 走 `fetch http://ipc.localhost/<cmd>`)。崩溃前最后一个请求是 file-loaded 兜底查询里的 `plugin:libmpv|get_property {name:"track-list", format:"node"}`;同一时段的 `calculate_peaks`、pause / time-pos / duration 查询都正常返回。空闲时(track-list 为空)同一调用只返回"FFI response contained no data"错误,不崩。
+
+**根因**:插件自带的预编译 `libmpv-wrapper.dll` 在 get_property 路径把非空 track-list 转成 node / JSON 时访问冲突;订阅事件那条 node 转换路径正常(App 一直靠它拿音轨表)。wrapper 是二进制,不在本仓库修。
+
+**修复**(68ae4c1):改按 `"string"` 取——mpv 把 node 属性格式化成 JSON 文本(含 `albumart` / `image` 等字段),前端 `JSON.parse`。`mpv.ts` 里从未被调用的 `getCurrentTracks()` 同样改为 string 取法,避免以后踩中。
+
+**经验教训**:
+- 经 FFI 的"同一数据、不同取法"不能互相担保:事件里的 node 能用,不代表 get_property 的 node 能用。
+- §6.32 的 App 内复测停在 op 状态机之前(当时锁屏),后续改动只有离线测试,于是一个启动即崩的回归被推送了。锁屏不是放弃 App 内验证的理由:CDP 驱动 + `PrintWindow` 取帧在锁屏时照样可用(§6.33)。
+
 ---
 
 ## 7. 性能 / UX 考量
@@ -937,7 +1001,7 @@ mpv 解码到文件末尾
 - **mpv 渲染走 native GPU**，前端 webview 几乎只负责 UI 控件，CPU/GPU 占用极低
 - **滑块 fill 用 `transform: scaleX`**：GPU 合成层，144Hz 拖动不触发 layout/paint
 - **滑块 thumb 用 `left:%` + `translate(-50%, -50%)`**：单元素 layout 成本可忽略；与 fill 的 scale 错峰（transform 百分比相对自身，不能用来在父容器内移动，详见 §6.8）
-- **虚拟播放头单例**（`useCursorAnimation.ts`）：rAF 状态（`displayed / lastTickTime / pauseFreezeUntil` 等）放在**模块级**，全局只一个 tick。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor / wavesurfer.setTime）通过 `useVirtualPlayhead(cb)` 订阅同一帧，绝对同步。父组件高频重渲染不会重启 rAF / 重置 `displayed`（旧实现把状态放 useEffect 局部 + 依赖 updater 会被父渲染节奏摧毁，详见 §6.22）。播放中以 mpv `audio-pts`(扣除驱动延迟的"正在响"位置)为主时钟,按"陈旧度补偿外推 + PLL 式 slew 微调"从动;seek 后 hold、回绕 coast、单曲循环取模,算法在 `lib/playheadClock.ts`(详见 §6.30 / §6.32;Ctrl+Shift+D 开 SyncDebugOverlay 实测)
+- **虚拟播放头单例**（`useCursorAnimation.ts`）：rAF 状态（`displayed / lastTickTime / pauseFreezeUntil` 等）放在**模块级**，全局只一个 tick。所有 cursor（ProgressFill / ProgressThumb / WaveformCursor / wavesurfer.setTime）通过 `useVirtualPlayhead(cb)` 订阅同一帧，绝对同步。父组件高频重渲染不会重启 rAF / 重置 `displayed`（旧实现把状态放 useEffect 局部 + 依赖 updater 会被父渲染节奏摧毁，详见 §6.22）。播放中以 mpv `audio-pts`(扣除驱动延迟的"正在响"位置)为主时钟,按"陈旧度补偿外推 + PLL 式 slew 微调"从动;seek 后 hold、回绕 coast、单曲循环取模;有视频时暂停对齐屏幕停住的帧、恢复时等声音追上再走,算法在 `lib/playheadClock.ts`(详见 §6.30 / §6.32 / §6.33;Ctrl+Shift+D 开 SyncDebugOverlay 实测)
 - **进度条父容器加 `contain: layout paint`**：隔离 thumb 的 `left:%` layout pass，不波及外层 ControlBar 其他元素
 - **PlaylistPanel `contain: layout paint` + `will-change: transform`**：滑入滑出动画跑在合成器层，跟 cursor 高频 DOM 写入互不干扰
 

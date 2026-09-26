@@ -3,7 +3,7 @@ import { createPlayheadClock, type ClockInput } from "../../../src/lib/playheadC
 
 type Step = {
   at: number; pos?: number; ap?: number | null; playing?: boolean; force?: boolean | "step" | { t: number };
-  hasAudio?: boolean | null; speed?: number; restart?: boolean; drag?: number | null;
+  hasAudio?: boolean | null; hasVideo?: boolean | null; speed?: number; restart?: boolean; drag?: number | null; eof?: boolean;
 };
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -28,6 +28,8 @@ function run(steps: Step[], until: number, base: Partial<ClockInput> = {}, gaps:
       if (s.pos !== undefined) { st.position = s.pos; st.positionObservedAt = s.at; }
       if (s.ap !== undefined) { st.audioPts = s.ap; st.audioPtsObservedAt = s.at; }
       if (s.playing !== undefined) st.playing = s.playing;
+      if (s.hasVideo !== undefined) st.hasVideo = s.hasVideo;
+      if (s.eof !== undefined) st.eof = s.eof;
       if (s.hasAudio !== undefined) st.hasAudio = s.hasAudio;
       if (s.speed !== undefined) st.speed = s.speed;
       if (s.restart) st.restartAt = s.at;
@@ -354,6 +356,164 @@ function after(target: number, startAt: number, to: number): Step[] {
     { at: 1030, force: { t: 20 } }, { at: 1035, pos: 20 }, { at: 1036, ap: null }, { at: 1038, restart: true }, ...after(20, 1060, 2000)], 2000, { duration: 60 });
   const tt = tickAt(out, 1900);
   check("H2 连按逐次执行：跟随最后一次落点", Math.abs(at(out, 1900) - (20 + (tt - 1060) / 1000)) < 0.003, `err=${((at(out, 1900) - (20 + (tt - 1060) / 1000)) * 1000).toFixed(1)}ms`);
+}
+
+// ── P. §6.33 暂停停帧：有视频时暂停对齐屏幕停住的帧(= 暂停时最新 time-pos)，恢复时等声音追上 ──
+// steady()：音频真值 t/1000，time-pos 超前 40ms；2000ms 暂停时最后一条 time-pos 为 2.02(1980.1ms)
+const V = { hasVideo: true };
+{
+  const out = run([...steady(0, 2000), { at: 2000, playing: false }, { at: 2600, pos: 1.9996 }, { at: 3000, pos: 2.02 }], 3200, V);
+  const paused = out.filter(([t]) => t > 2001);
+  check("P1 视频暂停：光标对齐暂停时最新 time-pos(屏幕停住的帧)，此后不再移动",
+    paused.every(([, d]) => Math.abs(d - 2.02) < 1e-9), `@2001=${paused[0][1].toFixed(4)} final=${at(out, 3200).toFixed(4)}`);
+}
+{
+  // 乱序：暂停前刚产生的 2.06 晚于 pause 到达(采用)，更早的 2.02 更晚到(不回退)。
+  // 两条落在不同帧：同一帧内 store 只留最后到的一条，那是 store 的固有限制(需乱序超过一帧才会发生)
+  const out = run([...steady(0, 2000), { at: 2000, playing: false }, { at: 2003, pos: 2.06 }, { at: 2015, pos: 2.02 }], 2600, V);
+  check("P2 乱序：窗口内取最靠后的一条，不被更早的旧值拉回", Math.abs(at(out, 2600) - 2.06) < 1e-9, `final=${at(out, 2600).toFixed(4)}`);
+}
+{
+  // 窗口外(150ms 后)才到的回报不跟随(§6.22)
+  const out = run([...steady(0, 2000), { at: 2000, playing: false }, { at: 2200, pos: 2.09 }], 2600, V);
+  check("P3 暂停 150ms 后才到的回报不跟随", Math.abs(at(out, 2600) - 2.02) < 1e-9, `final=${at(out, 2600).toFixed(4)}`);
+}
+{
+  // time-pos 停更(1Hz poll 兜底时)：最后回报 1s 前 → 不吸附，保持暂停瞬间位置；
+  // 暂停时 store 里是相差 >0.3s 的离谱值 → 不采用它，退回播放中缓存的相容回报 2.02
+  const stale = run([...steady(0, 2000, false), { at: 1000.5, pos: 1.04 }, { at: 2000, playing: false }], 2400, V);
+  const far = run([...steady(0, 2000), { at: 1999, pos: 2.5 }, { at: 2000, playing: false }], 2400, V);
+  const ref = (o: typeof stale) => o.filter(([t]) => t < 2000).at(-1)![1];
+  check("P4 陈旧回报不吸附；过远的回报不采用(退回缓存里相容的一条)",
+    Math.abs(at(stale, 2400) - ref(stale)) < 0.008 && Math.abs(at(far, 2400) - 2.02) < 1e-9 && far.every(([, d]) => d < 2.4),
+    `stale ${ref(stale).toFixed(4)}→${at(stale, 2400).toFixed(4)} far ${ref(far).toFixed(4)}→${at(far, 2400).toFixed(4)}`);
+}
+{
+  const audioOnly = run([...steady(0, 2000), { at: 2000, playing: false }], 2400, { hasVideo: false });
+  const unknown = run([...steady(0, 2000), { at: 2000, playing: false }], 2400, { hasVideo: null });
+  check("P5 纯音频 / 音轨表未知：暂停不吸附(§6.22 原行为)",
+    Math.abs(at(audioOnly, 2400) - 2.02) > 0.01 && Math.abs(at(unknown, 2400) - 2.02) > 0.01,
+    `audio=${at(audioOnly, 2400).toFixed(4)} unknown=${at(unknown, 2400).toFixed(4)}`);
+}
+{
+  // 恢复：声音从暂停位置(≈1.997)接着响，3030ms 起出声；光标停在 2.02 等它追上(≈3053ms)，之后跟随、不倒退
+  const out = run([...steady(0, 2000), { at: 2000, playing: false }, { at: 3000, playing: true }, ...after(1.997, 3030, 4000)], 4000, V);
+  const tt = tickAt(out, 3600);
+  const truth = 1.997 + (tt - 3030) / 1000;
+  check("P6 恢复：原地等声音追上暂停帧再走，不倒退，随后与声音一致",
+    Math.abs(at(out, 3045) - 2.02) < 1e-9 && at(out, 3070) > 2.02 && !backMovesWhile(out, 1990, 4000) && Math.abs(at(out, 3600) - truth) < 0.001,
+    `@3045=${at(out, 3045).toFixed(4)} @3070=${at(out, 3070).toFixed(4)} err@3600=${((at(out, 3600) - truth) * 1000).toFixed(2)}ms`);
+}
+{
+  // 恢复后声音迟迟不来：超时(超前量 + 150ms)后照常走，不永久钉住
+  const out = run([...steady(0, 2000), { at: 2000, playing: false }, { at: 3000, playing: true }], 3400, V);
+  check("P7 恢复后声音不来：超时后照常前进", Math.abs(at(out, 3100) - 2.02) < 1e-9 && at(out, 3300) > 2.1 && !backMovesWhile(out, 1990, 3400),
+    `@3100=${at(out, 3100).toFixed(4)} @3300=${at(out, 3300).toFixed(4)}`);
+}
+{
+  // 暂停吸附后又在暂停中 seek：op 接管；恢复时不再按旧超前量等待
+  const out = run([...steady(0, 2000), { at: 2000, playing: false }, { at: 2500, force: { t: 5 } }, { at: 2505, pos: 5 }, { at: 2506, restart: true },
+    { at: 3000, playing: true }, ...after(5, 3020, 3600)], 3600, V);
+  const tt = tickAt(out, 3500);
+  check("P8 暂停吸附后 seek：落点 5，恢复后跟随新位置", Math.abs(at(out, 2900) - 5) < 1e-9 && Math.abs(at(out, 3500) - (5 + (tt - 3020) / 1000)) < 0.003,
+    `@2900=${at(out, 2900)} err@3500=${((at(out, 3500) - (5 + (tt - 3020) / 1000)) * 1000).toFixed(1)}ms`);
+}
+{
+  // seek 后还在 hold(音频未恢复)时暂停：op 负责，不启用暂停停帧
+  const out = run([...steady(0, 1000), { at: 1000, force: { t: 8 } }, { at: 1005, pos: 8.0 }, { at: 1006, ap: null }, { at: 1008, restart: true },
+    { at: 1020, playing: false }, { at: 1040, pos: 8.0417 }], 1600, V);
+  check("P9 op 进行中暂停：按 op 规则(相符回报)处理", Math.abs(at(out, 1600) - 8.0417) < 1e-9, `final=${at(out, 1600)}`);
+}
+{
+  // 无音轨视频：光标按 time-pos 外推(会越过最后一帧)，暂停时按设计回退到最后一帧(≤1 帧)；
+  // 恢复后不等待、不倒退
+  const s: Step[] = [];
+  for (let t = 0; t < 2000; t += 42) s.push({ at: t, pos: t / 1000 });
+  const out = run([...s, { at: 2000, playing: false }, { at: 3000, playing: true }, { at: 3042, pos: 2.016 }, { at: 3084, pos: 2.058 }], 3300, { hasVideo: true, hasAudio: false });
+  const before = out.filter(([t]) => t < 2000).at(-1)![1];
+  const back = before - at(out, 2500);
+  check("P10 无音轨视频：暂停回退到最后一帧(≤1 帧)，恢复后按 time-pos 前进、不倒退",
+    Math.abs(at(out, 2500) - 1.974) < 1e-9 && back >= 0 && back <= 0.042 + 1e-9 && at(out, 3030) > 1.974 && !backMovesWhile(out, 2001, 3300),
+    `暂停前=${before.toFixed(4)} 回退=${(back * 1000).toFixed(1)}ms @3030=${at(out, 3030).toFixed(4)}`);
+}
+{
+  // 单曲循环：视频已回绕(time-pos 0.01)而声音还在上一圈末尾时暂停 → 按环形距离对齐到 0.01
+  const s: Step[] = [];
+  for (let t = 1000; t < 1980; t += 60) { s.push({ at: t, ap: t / 1000 }); s.push({ at: t + 0.1, pos: Math.min(t / 1000 + 0.04, 1.999) }); }
+  const out = run([...s, { at: 1981, pos: 0.01 }, { at: 1990, playing: false }], 2300, { hasVideo: true, loopFile: true, duration: 2 });
+  check("P11 单曲循环回绕处暂停：对齐到已回绕的画面帧", Math.abs(at(out, 2300) - 0.01) < 1e-9, `final=${at(out, 2300).toFixed(4)}`);
+}
+{
+  // codex 反例：暂停时 store 里是一条乱序晚到的旧 time-pos(0.83，比声音落后 0.22s) → 不采用
+  const out = run([{ at: 1000, pos: 1.04, ap: 1.0 }, { at: 1050, pos: 1.09, ap: 1.05 }, { at: 1102, pos: 0.83 }, { at: 1110, playing: false }], 1300, V);
+  check("P12 迟到的旧 time-pos 不把暂停光标拉回", at(out, 1300) >= 1.05 - 1e-9, `final=${at(out, 1300).toFixed(4)}`);
+}
+{
+  // codex 反例：窗口在后台(rAF 停)期间播放并暂停；回到前台时取停滞期间最新的 time-pos
+  const out = run([{ at: 1000, pos: 1.04, ap: 1.0 }, { at: 4995, pos: 5.04, ap: 5.0 }, { at: 4999, playing: false }], 5300, V, [[1001, 5000]]);
+  check("P13 后台期间由播放转为暂停：光标取最新 time-pos，不停在数秒前", Math.abs(at(out, 5300) - 5.04) < 1e-9, `final=${at(out, 5300).toFixed(4)}`);
+}
+{
+  // EOF 自动暂停(probes 实测序列，24fps 12s)：末帧 11.95833 → eof → pause 同时报 11.95905 → 126ms 后
+  // 报音频尾巴 12.0045(超出 duration)。光标停在末帧，不跟尾巴；pause 先于 eof 到达的乱序同样如此
+  const tail: Step[] = [];
+  for (let t = 11000; t < 11960; t += 42) { tail.push({ at: t, ap: t / 1000 - 0.04 }); tail.push({ at: t + 0.1, pos: Math.floor((t / 1000) * 24) / 24 }); }
+  const base = { hasVideo: true, duration: 12 };
+  const inOrder = run([...tail, { at: 11958, pos: 11.95833 }, { at: 11958.5, eof: true }, { at: 12000, playing: false, pos: 11.95905 }, { at: 12126, pos: 12.0045 }], 12400, base);
+  const reordered = run([...tail, { at: 11958, pos: 11.95833 }, { at: 12000, playing: false, pos: 11.95905 }, { at: 12010, eof: true }, { at: 12126, pos: 12.0045 }], 12400, base);
+  check("P14 EOF 自动暂停：停在末帧，不跟随随后报来的音频尾巴",
+    Math.abs(at(inOrder, 12400) - 11.95905) < 1e-9 && Math.abs(at(reordered, 12400) - 11.95905) < 1e-9,
+    `顺序=${at(inOrder, 12400).toFixed(5)} 乱序=${at(reordered, 12400).toFixed(5)}`);
+}
+{
+  // codex 第二轮反例(60fps)：正确帧 1.05 之后，一条落后界以内的旧值 0.966667 最后覆盖 store 再暂停。
+  // 播放中缓存的回报里仍有 1.05 → 取它；无音轨(光标按 time-pos 外推)同样如此
+  const seq: Step[] = [{ at: 900, ap: 0.9, pos: 0.95 }, { at: 950, ap: 0.95, pos: 1.0 }, { at: 1000, ap: 1.0, pos: 1.05 }, { at: 1009, pos: 0.966667 }, { at: 1010, playing: false }];
+  const withAudio = run(seq, 1300, V);
+  const noAudio = run(seq.map((s) => ({ ...s, ap: undefined })), 1300, { hasVideo: true, hasAudio: false });
+  check("P15 落后界内的旧值最后到达：仍取缓存里最靠后的帧",
+    Math.abs(at(withAudio, 1300) - 1.05) < 1e-9 && Math.abs(at(noAudio, 1300) - 1.05) < 1e-9,
+    `有音轨=${at(withAudio, 1300).toFixed(4)} 无音轨=${at(noAudio, 1300).toFixed(4)}`);
+}
+{
+  // codex 第二轮反例(单曲循环)：声音 0.02、正确帧 0.06，上一圈的旧值 1.99 最后到达 → 仍停在 0.06
+  const s: Step[] = [];
+  for (let t = 1000; t < 1990; t += 60) { s.push({ at: t, ap: t / 1000 }); s.push({ at: t + 0.1, pos: Math.min(t / 1000 + 0.04, 1.999) }); }
+  const out = run([...s, { at: 1990, ap: 1.99, pos: 0.03 }, { at: 2020, ap: 0.02, pos: 0.06 }, { at: 2025, pos: 1.99 }, { at: 2026, playing: false }], 2300, { hasVideo: true, loopFile: true, duration: 2 });
+  check("P16 单曲循环：上一圈的旧值最后到达，不被拉回", Math.abs(at(out, 2300) - 0.06) < 1e-9, `final=${at(out, 2300).toFixed(4)}`);
+}
+{
+  // codex 第二轮反例(EOF)：pause 先到(eof 仍为 false)，126ms 后音频尾巴 12.0045 先于 eof-reached 到达
+  // → eof 一到退回暂停那一刻的末帧
+  const tail: Step[] = [];
+  for (let t = 11000; t < 11960; t += 42) { tail.push({ at: t, ap: t / 1000 - 0.04 }); tail.push({ at: t + 0.1, pos: Math.floor((t / 1000) * 24) / 24 }); }
+  const out = run([...tail, { at: 11958, pos: 11.95833 }, { at: 12000, playing: false, pos: 11.95905 }, { at: 12126, pos: 12.0045 }, { at: 12135, eof: true }], 12400, { hasVideo: true, duration: 12 });
+  check("P17 EOF：音频尾巴先于 eof-reached 到达，eof 一到退回末帧", Math.abs(at(out, 12400) - 11.95905) < 1e-9, `@12130=${at(out, 12130).toFixed(5)} final=${at(out, 12400).toFixed(5)}`);
+}
+{
+  // codex 第三轮反例：小幅向后 seek(1.00→0.90)刚解除钉住，seek 前产生的旧值 1.05 迟到，随后正确的 0.95，
+  // 再暂停。op 结束后的静默期内不收缓存 → 按 store 当前值 0.95，旧高值不被选中
+  const out = run([{ at: 900, ap: 0.96, pos: 1.0 }, { at: 1000, force: { t: 0.9 } }, { at: 1005, pos: 0.9 }, { at: 1006, restart: true },
+    { at: 1040, ap: 0.9 }, { at: 1060, pos: 1.05 }, { at: 1065, pos: 0.95 }, { at: 1070, playing: false }], 1300, V);
+  check("P18 seek 刚结束时迟到的旧高值不被选中", Math.abs(at(out, 1300) - 0.95) < 1e-9 && out.filter(([t]) => t > 1070).every(([, d]) => d < 1.0),
+    `final=${at(out, 1300).toFixed(4)}`);
+}
+{
+  // codex 第三轮反例：变速同一帧到达的旧时钟高值 1.20 不进缓存；变速后正确值 1.07 到达后暂停 → 1.07
+  const out = run([{ at: 900, ap: 0.9, pos: 0.95 }, { at: 1000, ap: 1.0, pos: 1.05 }, { at: 1010, speed: 2, pos: 1.2 }, { at: 1020, pos: 1.07 }, { at: 1030, playing: false }], 1300, V);
+  check("P19 变速同帧到达的旧高值不被选中", Math.abs(at(out, 1300) - 1.07) < 1e-9, `final=${at(out, 1300).toFixed(4)}`);
+}
+{
+  // codex 第三轮反例：EOF 时暂停那一刻没有合格候选(time-pos 停在 1s 前)。随后的尾巴：超出时长的 12.0045 不采用；
+  // 未超出时长的 11.99(vo=null 实测形态)先被采用，eof 一到撤回到暂停瞬间的光标
+  const base: Step[] = [{ at: 11000, pos: 11.0 }];
+  for (let t = 11000; t < 12000; t += 42) base.push({ at: t + 0.2, ap: t / 1000 - 0.06 });
+  const over = run([...base, { at: 12000, playing: false }, { at: 12120, pos: 12.0045 }, { at: 12130, eof: true }], 12400, { hasVideo: true, duration: 12 });
+  const under = run([...base, { at: 12000, playing: false }, { at: 12100, pos: 11.99 }, { at: 12130, eof: true }], 12400, { hasVideo: true, duration: 12 });
+  const ref = over.filter(([t]) => t < 12000).at(-1)![1];
+  check("P20 EOF 且暂停时无候选：超出时长的尾巴不采用，未超出的在 eof 到达后撤回",
+    Math.abs(at(over, 12400) - ref) < 0.008 && Math.abs(at(under, 12400) - at(under, 12050)) < 1e-9 && Math.abs(at(under, 12120) - 11.99) < 1e-9,
+    `暂停瞬间≈${ref.toFixed(4)} over=${at(over, 12400).toFixed(4)} under: @12120=${at(under, 12120).toFixed(4)} final=${at(under, 12400).toFixed(4)}`);
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);

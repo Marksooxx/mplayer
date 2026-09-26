@@ -176,6 +176,8 @@ interface MpvTrackRaw {
   lang?: string;
   selected?: boolean;
   codec?: string;
+  albumart?: boolean;
+  image?: boolean;
 }
 
 export function parseTrackList(raw: unknown): TrackInfo[] {
@@ -189,13 +191,17 @@ export function parseTrackList(raw: unknown): TrackInfo[] {
       lang: t.lang,
       selected: !!t.selected,
       codec: t.codec,
+      albumart: !!t.albumart,
+      image: !!t.image,
     }));
 }
 
 export async function getCurrentTracks(): Promise<TrackInfo[]> {
   try {
-    const raw = await getProperty("track-list", "node");
-    return parseTrackList(raw);
+    // 必须按 string 取再 JSON.parse：get_property 的 "node" 格式对非空 track-list 会让
+    // libmpv-wrapper.dll 访问冲突、整个 App 崩溃(§6.34)
+    const raw = await getProperty("track-list", "string");
+    return parseTrackList(typeof raw === "string" ? JSON.parse(raw) : raw);
   } catch {
     return [];
   }

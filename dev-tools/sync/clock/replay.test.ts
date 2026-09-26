@@ -132,7 +132,7 @@ for (const [label, sc] of Object.entries(scenarios)) {
     const clk = algo === "old" ? createOldClock() : createPlayheadClock();
     const st: ClockInput = {
       playing: false, position: 0, positionObservedAt: 0, audioPts: null, audioPtsObservedAt: 0, restartAt: 0,
-      hasAudio: true, speed: 1, duration: sc.duration, dragPosition: null, loopFile: !!sc.loop,
+      hasAudio: true, hasVideo: sc.log.startsWith("mp4"), speed: 1, duration: sc.duration, dragPosition: null, loopFile: !!sc.loop,
     };
     let isPlaying = true, fileLoaded = false, i = 0;
     const errs: Record<string, number[]> = {}; for (const w of sc.windows) errs[w[0]] = [];

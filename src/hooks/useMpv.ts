@@ -255,6 +255,7 @@ export function useMpv(): void {
             s.setCurrentAid(ev.data);
             break;
           case "eof-reached":
+            s.setEofReached(!!ev.data);
             if (ev.data) {
               void handleEof();
             }
@@ -364,6 +365,8 @@ export function useMpv(): void {
           // 上一个文件的时长/音频时钟不能带进新文件（波形时间轴按 duration 摆放）
           s.setDuration(0);
           s.setAudioPts(null);
+          // 上一个文件的 eof-reached=true 不能带进新文件(mpv 的清除事件单独转发，可能晚到)
+          s.setEofReached(false);
           s.resetTracks();
           s.bumpLoadSeq();
           return;

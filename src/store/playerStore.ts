@@ -16,6 +16,10 @@ export interface TrackInfo {
   lang?: string;
   selected: boolean;
   codec?: string;
+  /** 视频轨其实是音频文件内嵌的封面图 */
+  albumart?: boolean;
+  /** 静态图片轨(封面图 / png 等) */
+  image?: boolean;
 }
 
 interface PlayerState {
@@ -38,6 +42,8 @@ interface PlayerState {
   audioPtsObservedAt: number;
   /** 最近一次 mpv playback-restart 事件到达时刻（seek / 加载完成标记，虚拟播放头用） */
   restartAt: number;
+  /** mpv eof-reached：播到结尾(keep-open 会随之自动暂停，虚拟播放头据此区分用户暂停) */
+  eofReached: boolean;
   /** 每次 start-file 递增：同路径重载（覆盖后重导出）也能触发波形重取 */
   loadSeq: number;
   duration: number;
@@ -76,6 +82,7 @@ interface PlayerState {
   setPosition: (v: number) => void;
   setAudioPts: (v: number | null) => void;
   markRestart: () => void;
+  setEofReached: (v: boolean) => void;
   bumpLoadSeq: () => void;
   setDuration: (v: number) => void;
 
@@ -126,6 +133,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   audioPts: null,
   audioPtsObservedAt: 0,
   restartAt: 0,
+  eofReached: false,
   loadSeq: 0,
   duration: 0,
 
@@ -225,6 +233,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   setAudioPts: (v) =>
     set({ audioPts: v, audioPtsObservedAt: performance.now() }),
   markRestart: () => set({ restartAt: performance.now() }),
+  setEofReached: (v) => set({ eofReached: v }),
   bumpLoadSeq: () => set((s) => ({ loadSeq: s.loadSeq + 1 })),
   setDuration: (v) => set({ duration: v }),
 
