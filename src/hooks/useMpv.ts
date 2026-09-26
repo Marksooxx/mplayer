@@ -336,7 +336,11 @@ export function useMpv(): void {
               if (typeof dur === "number") cur()?.setDuration(dur);
             } catch { /* ignore */ }
             try {
-              const tl = await getProperty("track-list", "node");
+              // ★ 不能用 "node" 格式 ★ 插件自带的 libmpv-wrapper.dll 在 get_property 把非空
+              // track-list 转成 node 时访问冲突(0xC0000005)，整个 App 在打开任何文件时崩溃
+              // (订阅事件那条 node 转换路径没问题)。mpv 把 node 属性按 string 取时输出 JSON。
+              const raw = await getProperty("track-list", "string");
+              const tl: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
               const st = cur();
               if (st) {
                 st.setTracks(parseTrackList(tl));
