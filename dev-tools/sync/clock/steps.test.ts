@@ -12,18 +12,16 @@ const LAT = Number(process.argv[2] ?? "0");
 
 // "time-pos"：光标 = mpv 最新 time-pos(暂停时即屏幕停住的帧，见 probes/pause_frame.py)；
 // { near: "audio" }：光标与外推的 audio-pts(正在响的位置)之差不超过 tol
-type Expect = "time-pos" | number | { near: "time-pos" | "audio"; tol: number };
+type Expect = "time-pos" | "skip" | number | { near: "time-pos" | "audio"; tol: number };
 interface Case {
   /** 每个用户动作(按顺序)之后 +380ms 的期望；pauseActs=false 时不含 set,pause 动作 */
   expects: Expect[];
   pauseActs?: boolean;
   /** 依次加载的每个文件是否有视频画面(ClockInput.hasVideo) */
   video: boolean[];
-  /**
-   * 已知问题(§6.33 "开播停顿")：录制开头 untilMs 内、单次回退不超过 maxBackS 的倒退(最多 maxCount 次)只报告为 KNOWN。
-   * 只对确认过的录制开放；其他时间窗、更大的回退照常判失败。
-   */
-  knownStartup?: { untilMs: number; maxBackS: number; maxCount: number };
+  /** 单曲循环(loop-file=inf)与文件时长；默认非循环、12s */
+  loop?: boolean;
+  duration?: number;
 }
 const RESUMED: Expect = { near: "audio", tol: 0.008 };
 const cases: Record<string, Case> = {
@@ -35,22 +33,24 @@ const cases: Record<string, Case> = {
   "seekpause.json": { expects: [0.8333], video: [true] },
   "loadnext.json": { expects: [{ near: "time-pos", tol: 0.06 }], video: [true, false] }, // 切文件后跟上新文件的时钟
   // 播放中暂停：光标停在屏幕停住的帧(超前声音 1–3 帧)；恢复后等声音追上再走，380ms 后与声音一致
-  "ppause24.json": { expects: ["time-pos", RESUMED, "time-pos", RESUMED, "time-pos", RESUMED], pauseActs: true, video: [true], knownStartup: { untilMs: 1000, maxBackS: 0.4, maxCount: 1 } },
+  "ppause24.json": { expects: ["time-pos", RESUMED, "time-pos", RESUMED, "time-pos", RESUMED], pauseActs: true, video: [true] }, // 开头含一次约 400ms 的起播停顿(§6.35)
   "ppause60.json": { expects: ["time-pos", RESUMED, "time-pos", RESUMED, "time-pos", RESUMED], pauseActs: true, video: [true] },
+  // 单曲循环 6s 视频，在每圈最后 0.02–0.30s 暂停 10 次(5 次 mpv 处理暂停要 94–164ms)：光标停在屏幕帧(= time-pos，
+  // probes 取帧 10/10 一致，含已回绕到第 0 帧的 3 次)；恢复紧挨回绕，不检查位置
+  "looptail6.json": { expects: Array.from({ length: 10 }, () => ["time-pos", "skip"] as Expect[]).flat(), pauseActs: true, video: [true], loop: true, duration: 6 },
 };
 
 let failures = 0;
-for (const [file, { expects, pauseActs, video, knownStartup }] of Object.entries(cases)) {
+for (const [file, { expects, pauseActs, video, loop, duration }] of Object.entries(cases)) {
   const evs: any[] = JSON.parse(readFileSync(new URL(file, DATA), "utf8"));
   const clk = createPlayheadClock();
-  const st: ClockInput = { playing: false, position: 0, positionObservedAt: 0, audioPts: null, audioPtsObservedAt: 0, restartAt: 0, hasAudio: true, hasVideo: null, speed: 1, duration: 12, dragPosition: null, loopFile: false };
+  const st: ClockInput = { playing: false, position: 0, positionObservedAt: 0, audioPts: null, audioPtsObservedAt: 0, restartAt: 0, hasAudio: true, hasVideo: null, speed: 1, duration: duration ?? 12, dragPosition: null, loopFile: !!loop };
   let isPlaying = true, fileLoaded = false, i = 0, loads = 0;
   const sorted = evs.map((e) => ({ ...e, at: (e.t + (e.act ? 0 : LAT / 1000)) * 1000 })).sort((a, b) => a.at - b.at);
   const acts = sorted.filter((e) => e.act && (pauseActs || !/pause/.test(e.act)));
   let ni = 0;
-  // 播放中的非用户倒退(用户 seek / 切文件引起的除外)；恢复播放第一帧的倒退；
-  // knownStartup 范围内的开播倒退单独计：已知问题，只报告不断言
-  let unexpectedBack = 0, resumeBack = 0, startupBack = 0, prev: number | null = null, prevPlaying = false, lastActAt = -Infinity;
+  // 播放中的非用户倒退(用户 seek / 切文件引起的除外，含起播停顿)；恢复播放第一帧的倒退
+  let unexpectedBack = 0, resumeBack = 0, prev: number | null = null, prevPlaying = false, lastActAt = -Infinity;
   for (let t = 1; t < sorted.at(-1).at + 1300; t += 1000 / 144) {
     while (i < sorted.length && sorted[i].at <= t) {
       const e = sorted[i++];
@@ -70,17 +70,19 @@ for (const [file, { expects, pauseActs, video, knownStartup }] of Object.entries
     }
     st.playing = isPlaying && fileLoaded;
     const d = clk.tick({ ...st }, t);
-    if (prev !== null && st.playing && prevPlaying && d < prev - 1e-9 && t - lastActAt > 150) {
-      if (knownStartup && t < knownStartup.untilMs && prev - d <= knownStartup.maxBackS && startupBack < knownStartup.maxCount) startupBack++;
-      else unexpectedBack++;
-    }
-    if (prev !== null && st.playing && !prevPlaying && fileLoaded && t - lastActAt > 150 && d < prev - 1e-9) resumeBack++;
+    // 单曲循环回绕(从末尾 0.5s 内跳到开头 0.5s 内)不算倒退
+    const wrap = !!loop && prev !== null && prev > st.duration - 0.5 && d < 0.5;
+    const back = prev !== null && d < prev - 1e-9 && !wrap;
+    if (back && st.playing && prevPlaying && t - lastActAt > 150) unexpectedBack++;
+    if (back && st.playing && !prevPlaying && fileLoaded && t - lastActAt > 150) resumeBack++;
     prev = d; prevPlaying = st.playing;
     while (ni < acts.length && t >= acts[ni].at + 380) {
       const exp = expects[ni];
+      if (exp === "skip") { ni++; continue; }
       const audioNow = st.audioPts === null ? NaN : st.audioPts + (t - st.audioPtsObservedAt) / 1000;
       const want = exp === "time-pos" ? st.position : typeof exp === "number" ? exp : exp.near === "audio" ? audioNow : st.position;
-      const tol = typeof exp === "object" ? exp.tol : 1e-4;
+      // 模拟事件链延迟时，"接近声音"的参照本身也晚了 LAT
+      const tol = typeof exp === "object" ? exp.tol + (exp.near === "audio" ? LAT / 1000 : 0) : 1e-4;
       const ok = Math.abs(d - want) <= tol;
       if (!ok) failures++;
       console.log(`${ok ? "PASS" : "FAIL"}  ${file.padEnd(15)} #${ni + 1} ${acts[ni].act.slice(0, 22).padEnd(22)} 光标=${d.toFixed(4)} 期望=${want.toFixed(4)} (time-pos=${st.position.toFixed(4)})`);
@@ -90,7 +92,6 @@ for (const [file, { expects, pauseActs, video, knownStartup }] of Object.entries
   const ok = unexpectedBack === 0 && resumeBack === 0;
   if (!ok) failures++;
   console.log(`${ok ? "PASS" : "FAIL"}  ${file.padEnd(15)} 播放中非操作引起的倒退帧数=${unexpectedBack} 恢复播放时倒退=${resumeBack}`);
-  if (startupBack) console.log(`KNOWN ${file.padEnd(15)} 开播阶段倒退帧数=${startupBack}(mpv 起播后停顿、音频未走时外推过头，未修)`);
 }
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exitCode = failures ? 1 : 0;

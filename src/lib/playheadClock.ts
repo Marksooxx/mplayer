@@ -28,6 +28,8 @@
  *     短时间内新到的音频观测若有偏差直接对齐。暂停中登记、之后恢复播放的，只用恢复
  *     之后的音频观测。音轨表未知（加载中）时不按"无音轨"处理。
  *   - 早于最近一次 op 的 audio-pts 一律作废；超时（HOLD_TIMEOUT_MS）兜底。
+ * audio-pts 与 time-pos 的值都超过 STALL_CAP_MS 没有前进 → stall：外推封顶、不越过，恢复后光标若超前
+ * 则原地等声音追上（§6.35，App 首次打开视频时 mpv 约停 400ms）；
  * 回绕等内部原因 audio-pts 短暂缺失 → coast（按 dt 惯性前进、不修正）；
  * 无音轨 / audio-pts 长期缺失或停更 → 退回 time-pos 外推（旧行为）。
  *
@@ -46,6 +48,7 @@
  * 帧照常显示出来，这一帧就是暂停时最新的 time-pos，比暂停瞬间的声音位置超前 1–3 帧
  * （实测 48/48，24/30/60fps；暂停之后 mpv 不再报 time-pos）。事件可能被乱序转发，
  * 所以暂停时连同播放中缓存的回报、暂停后 PAUSE_FRAME_WINDOW_MS 内取相容回报中最靠后的一条
+ * (单曲循环回绕处例外：屏幕帧可能落后于声音，放宽落后界)
  * (EOF 自动暂停例外：之后报来的是音频尾巴，只认暂停那一刻)。恢复播放时声音从暂停
  * 位置接着响，光标原地等声音追上这一帧再走（推断画面也会停到那时，未取帧验证），不倒退。
  */
@@ -79,6 +82,7 @@ export type ClockSource =
   | "audio"
   | "hold"
   | "coast"
+  | "stall"
   | "time-pos"
   | "paused"
   | "drag";
@@ -152,6 +156,15 @@ export const PAUSE_FRAME_MAX_S = 0.3;
  */
 export const PAUSE_FRAME_BEHIND_S = 0.05;
 export const PAUSE_FRAME_BEHIND_NOAUDIO_S = 0.1;
+/**
+ * 放宽的落后界：单曲循环边界(末尾 / 刚回绕的开头 LOOP_TAIL_S 内)、暂停前处于 coast 或 stall。
+ * 回绕处 mpv 处理暂停命令要 94–164ms(实测 5/10 次；其他情况 <8ms)，其间光标还在前进，而屏幕
+ * 停在已入队的帧上；App 内还见过屏幕帧落后声音约 113ms 的一次。停滞中光标本就走在真实位置前面
+ * (≤ STALL_CAP_MS)。光标会比屏幕帧超前至多约 150ms。
+ */
+export const PAUSE_FRAME_BEHIND_COAST_S = 0.2;
+/** 单曲循环末尾 / 开头这么长算"回绕处"：time-pos 约提前 250ms 归零，暂停处理最多再晚约 160ms */
+export const LOOP_TAIL_S = 0.35;
 /** 播放中保留的最近 time-pos 条数(暂停停帧候选；0.3s 内 60fps 约 18 条) */
 export const RECENT_POS_MAX = 32;
 /**
@@ -165,6 +178,16 @@ export const RECENT_POS_QUIET_MS = 300;
  * 超前量定时，而是等恢复之后的 audio-pts 追上这一帧；超过 超前量/speed + 这么久仍没追上就放弃。
  */
 export const RESUME_HOLD_SLACK_MS = 150;
+/**
+ * 起播 / 卡顿停滞(§6.35)：audio-pts 与 time-pos 的**值**都超过这么久没有前进 → mpv 的时钟多半没在走
+ * (实测 App 首次打开视频时约停 400ms，期间 audio-pts 只走了 33ms)。按值而不按"有没有新回报"：
+ * 卡住时 1Hz poll 拿回的是同一个 time-pos，不算前进。外推封顶在"最后音频观测 + 这么久"，
+ * 不再越过；恢复后光标若已超前，原地等声音追上(复用恢复等声)，不倒退。
+ * 正常播放两路回报的最大间隔：纯音频约 100ms、视频约 65ms(录制实测)，恢复播放后首条 ≤51ms。
+ */
+export const STALL_CAP_MS = 150;
+/** 停滞恢复时光标超前声音超过这么多才原地等待；更小的交给常规 slew */
+export const STALL_CATCHUP_MIN_S = 0.02;
 
 export interface PlayheadClock {
   /** 推进一帧；返回本帧 displayed（秒） */
@@ -234,6 +257,8 @@ export function createPlayheadClock(): PlayheadClock {
   let pauseFrameUntil = 0; // 暂停后对齐画面帧的窗口截止
   let pauseFrameArmedAt = 0;
   let pauseFrameFrom = 0; // 暂停瞬间的光标(= 声音位置)
+  let pauseFrameBehind = PAUSE_FRAME_BEHIND_S; // 本次暂停的落后界(未乘 speed)
+  let pauseFrameOldest = 0; // 本次暂停接受的最早到达时刻
   let pauseFrameLead: number | null = null; // 已对齐的帧相对 pauseFrameFrom 的超前量(s)
   // 暂停这一刻(含播放中缓存的回报)的最佳候选：EOF 时退回它，不跟随之后报来的音频尾巴
   let pauseFrameAtArm: { pos: number; d: number } | null = null;
@@ -242,6 +267,15 @@ export function createPlayheadClock(): PlayheadClock {
   // 暂停时从这里和 store 当前值中取与暂停瞬间光标相容的最靠后一条
   let recentPos: { pos: number; at: number }[] = [];
   let recentPosQuietUntil = 0;
+  let stallAhead = false; // 本轮停滞期间光标按封顶外推走过，恢复时要检查是否超前(跨暂停保留)
+  // 两路回报"值有变化"的最近时刻(停滞判定用)；值不变的回报(卡住时的 poll)不算前进
+  let lastAudioVal: number | null = null;
+  let audioProgressAt = -Infinity;
+  let lastPosVal: number | null = null;
+  let posProgressAt = -Infinity;
+  // 事件断了但时钟在走：time-pos 在前进而 audio-pts 已超过 AUDIO_STALE_MS 没有回报(音频先于视频
+  // 结束、事件链只剩 1Hz poll)。此时不做停滞判定，沿用 time-pos 外推；audio-pts 再前进时解除
+  let audioSilentButRunning = false;
 
   function clearPauseFrame(): void {
     pauseFrameUntil = 0;
@@ -273,6 +307,23 @@ export function createPlayheadClock(): PlayheadClock {
 
   /** 播放中的外推真值；null = 本帧不修正（coast） */
   function target(inp: ClockInput, now: number): { value: number | null; src: ClockSource } {
+    // "事件断了但时钟在走"的豁免只在 time-pos 最近仍在前进时有效(1Hz poll 间隔内)
+    const silentExempt = audioSilentButRunning && now - posProgressAt < AGE_CAP * 1000;
+    if (
+      inp.playing &&
+      inp.hasAudio === true &&
+      !silentExempt &&
+      inp.audioPts !== null &&
+      Number.isFinite(inp.audioPts) &&
+      inp.audioPtsObservedAt > lastOpAt &&
+      now - Math.max(audioProgressAt, posProgressAt, playStartedAt) > STALL_CAP_MS
+    ) {
+      // 两路的值都停着：mpv 时钟多半没在走，外推封顶在"最后音频观测 + STALL_CAP_MS"。
+      // 不受 AUDIO_STALE_MS 限制：卡住超过 600ms 也保持停住，不在那一刻跳去 time-pos 外推
+      let v = inp.audioPts;
+      if (v < 0 && inp.loopFile && inp.duration > 0) v += inp.duration;
+      return { value: v + (STALL_CAP_MS / 1000) * inp.speed, src: "stall" };
+    }
     const av = audioValue(inp, now);
     if (av !== null) {
       return { value: aged(av, inp.audioPtsObservedAt, playStartedAt, now, inp.speed), src: "audio" };
@@ -303,6 +354,23 @@ export function createPlayheadClock(): PlayheadClock {
     if (audioObsNew && audioValidNow) lastAudioValidAt = inp.audioPtsObservedAt;
     const positionObsNew = inp.positionObservedAt !== lastPositionObs;
     if (positionObsNew) lastPositionObs = inp.positionObservedAt;
+    // 停滞判定：记录两路"值有变化"的时刻
+    if (audioObsNew && inp.audioPts !== null) {
+      if (inp.audioPts !== lastAudioVal) {
+        audioProgressAt = inp.audioPtsObservedAt;
+        audioSilentButRunning = false;
+      }
+      lastAudioVal = inp.audioPts;
+    }
+    if (positionObsNew) {
+      if (inp.position !== lastPosVal) {
+        posProgressAt = inp.positionObservedAt;
+        if (playing && inp.hasAudio === true && now - Math.max(inp.audioPtsObservedAt, playStartedAt) > AUDIO_STALE_MS) {
+          audioSilentButRunning = true;
+        }
+      }
+      lastPosVal = inp.position;
+    }
 
     if (lastSpeed !== null && inp.speed !== lastSpeed) {
       speedChangedAt = now;
@@ -335,6 +403,20 @@ export function createPlayheadClock(): PlayheadClock {
         pauseFrameArmedAt = now;
         pauseFrameUntil = now + PAUSE_FRAME_WINDOW_MS;
         pauseFrameFrom = displayed;
+        // dbgSrc 此时是上一帧(最后一个播放帧)的时钟源
+        // 单曲循环边界：末尾或刚回绕到开头(光标已取模、audio-pts 还是上一圈的负值尾巴)。
+        // op 结束 / 变速后的静默期内不放宽：那时晚到的可能是跳变前的旧帧
+        const edge = inp.loopFile && inp.duration > 0 ? Math.min(displayed, inp.duration - displayed) : Infinity;
+        const loopEdge = edge < LOOP_TAIL_S * Math.max(1, inp.speed) && now >= recentPosQuietUntil;
+        // 停滞中暂停：最后一条 time-pos 就是真实的最后一帧，只是早于常规的新鲜度窗口
+        pauseFrameOldest = now - PAUSE_FRAME_MAX_S * Math.max(1, inp.speed) * 1000;
+        if (dbgSrc === "stall" && Number.isFinite(posProgressAt)) pauseFrameOldest = Math.min(pauseFrameOldest, posProgressAt);
+        pauseFrameBehind =
+          dbgSrc === "coast" || dbgSrc === "stall" || loopEdge
+            ? PAUSE_FRAME_BEHIND_COAST_S
+            : inp.hasAudio === true
+              ? PAUSE_FRAME_BEHIND_S
+              : PAUSE_FRAME_BEHIND_NOAUDIO_S;
       }
     }
     if (inp.dragPosition !== null) {
@@ -419,9 +501,9 @@ export function createPlayheadClock(): PlayheadClock {
       // 暂停那一刻连同播放中缓存的回报一起考虑：乱序晚到的旧值盖掉 store 也不影响
       if (!playing && !op && now <= pauseFrameUntil) {
         const k = Math.max(1, inp.speed);
-        const behind = (inp.hasAudio === true ? PAUSE_FRAME_BEHIND_S : PAUSE_FRAME_BEHIND_NOAUDIO_S) * k;
+        const behind = pauseFrameBehind * k;
         const consider = (pos: number, at: number): void => {
-          if (at < pauseFrameArmedAt - PAUSE_FRAME_MAX_S * k * 1000) return; // 太旧
+          if (at < pauseFrameOldest) return; // 太旧
           if (inp.duration > 0 && pos > inp.duration) return; // 超出时长的是音频尾巴，不是画面帧
           let d = pos - pauseFrameFrom;
           if (inp.loopFile && inp.duration > 0) d = wrapErr(d, inp.duration);
@@ -522,6 +604,7 @@ export function createPlayheadClock(): PlayheadClock {
             alignedThisFrame = true;
             resyncAfterResume = false;
             resumeHoldUntil = 0;
+            stallAhead = false;
           } else if (now >= resumeHoldUntil) {
             resumeHoldUntil = 0; // 迟迟没追上：交回常规外推 / 微调
           } else {
@@ -529,10 +612,41 @@ export function createPlayheadClock(): PlayheadClock {
           }
         }
 
+        const loopMode = inp.loopFile && inp.duration > 0;
+        let tg: { value: number | null; src: ClockSource } | null = null;
+        if (!op && !waitAudio) {
+          tg = target(inp, now);
+          if (tg.src !== "stall" && stallAhead) {
+            // 停滞结束 / 恢复播放：光标按封顶外推走在了声音前面 → 原地等它追上，不倒退。
+            // 等待期间保留 stallAhead(等待被暂停打断、超时后仍无前进时会再次等待)，追上才清除
+            let e = tg.src === "audio" && tg.value !== null ? tg.value - displayed : 0;
+            if (loopMode) e = wrapErr(e, inp.duration);
+            if (tg.src === "audio" && e < -STALL_CATCHUP_MIN_S && -e <= SNAP_THRESHOLD) {
+              resumeHoldUntil = now + (-e / Math.max(inp.speed, 0.01)) * 1000 + RESUME_HOLD_SLACK_MS;
+              postReleaseUntil = 0;
+              waitAudio = true;
+            } else {
+              stallAhead = false;
+              if (tg.src === "audio" && tg.value !== null && e > 0 && e <= SNAP_THRESHOLD) {
+                // 时钟其实在走、只是回报变慢：封顶让光标落后了，一步向前跟上(不以 10% 速率慢追)
+                displayed = tg.value;
+                alignedThisFrame = true;
+              }
+            }
+          }
+        }
+
         if (op || waitAudio) {
-          src = "hold"; // 钉在落点 / 暂停帧，不走
-        } else {
-          const tg = target(inp, now);
+          src = "hold"; // 钉在落点 / 暂停帧 / 停滞后等声音，不走
+        } else if (tg && tg.src === "stall" && tg.value !== null) {
+          // 停滞：照常前进但不越过封顶值(也不后退)，不做 slew / snap
+          src = "stall";
+          let room = tg.value - displayed;
+          if (loopMode) room = wrapErr(room, inp.duration);
+          if (!alignedThisFrame) displayed += Math.max(0, Math.min(dt * inp.speed, room));
+          stallAhead = true;
+          postReleaseUntil = 0;
+        } else if (tg) {
           src = tg.src;
           if (!alignedThisFrame) displayed += dt * inp.speed;
 
@@ -596,7 +710,7 @@ export function createPlayheadClock(): PlayheadClock {
     if (hadOp && op === null) recentPosQuietUntil = now + RECENT_POS_QUIET_MS;
 
     // —— 调试 ——
-    const usingAudio = src === "audio" || src === "hold" || src === "coast";
+    const usingAudio = src === "audio" || src === "hold" || src === "coast" || src === "stall";
     if (usingAudio ? audioObsNew : positionObsNew) dbgObsCount += 1;
     const obsAt = usingAudio ? inp.audioPtsObservedAt : inp.positionObservedAt;
     dbgSrc = src;
@@ -620,6 +734,10 @@ export function createPlayheadClock(): PlayheadClock {
       lastOpAt = now;
       clearPauseFrame();
       recentPos = [];
+      stallAhead = false;
+      audioSilentButRunning = false;
+      lastAudioVal = null;
+      lastPosVal = null;
     },
     reset() {
       displayed = null;
@@ -638,6 +756,12 @@ export function createPlayheadClock(): PlayheadClock {
       clearPauseFrame();
       recentPos = [];
       recentPosQuietUntil = 0;
+      stallAhead = false;
+      lastAudioVal = null;
+      audioProgressAt = -Infinity;
+      lastPosVal = null;
+      posProgressAt = -Infinity;
+      audioSilentButRunning = false;
       dbgErrMs = null;
       dbgTpAp = null;
     },

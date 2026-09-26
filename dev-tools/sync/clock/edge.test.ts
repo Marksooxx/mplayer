@@ -516,5 +516,140 @@ const V = { hasVideo: true };
     `暂停瞬间≈${ref.toFixed(4)} over=${at(over, 12400).toFixed(4)} under: @12120=${at(under, 12120).toFixed(4)} final=${at(under, 12400).toFixed(4)}`);
 }
 
+// ── S. §6.35 起播 / 卡顿停滞：两路回报都停更 → 外推封顶、不越过；恢复后光标超前则原地等声音 ──
+{
+  // App 首次打开视频的实测形态(ppause24)：加载 op → restart 时 audio-pts 0.0004 → 约 400ms 无任何回报
+  // (声音也没走) → 恢复后从 0.0334 起正常。改前：外推到 0.39 再硬 snap 回 0.03
+  const s: Step[] = [{ at: 0, force: { t: 0 } }, { at: 4, restart: true }, { at: 5, pos: 0.0417, ap: 0.0004 }];
+  for (let t = 405; t < 1500; t += 42) s.push({ at: t, ap: 0.0334 + (t - 405) / 1000, pos: 0.0833 + (t - 405) / 1000 });
+  const out = run(s, 1500, { hasVideo: true });
+  const peak = Math.max(...out.filter(([t]) => t < 405).map(([, d]) => d));
+  const tt = tickAt(out, 1400);
+  // 落点回报 time-pos 0.0417、首条 audio-pts 0.0004：解除时不后退保护让光标留在 0.0417，封顶以此为基准
+  check("S1 起播停顿：外推封顶(落点 + ≤0.15s)、不倒退，恢复后与声音一致",
+    peak <= 0.0417 + 0.15 + 1e-6 && !backMovesWhile(out, 0, 1500) && Math.abs(at(out, 1400) - (0.0334 + (tt - 405) / 1000)) < 0.002,
+    `停顿中最远=${peak.toFixed(4)} err@1400=${((at(out, 1400) - (0.0334 + (tt - 405) / 1000)) * 1000).toFixed(1)}ms`);
+}
+{
+  // 播放中两路都停 300ms(解码 / 输出卡顿，声音也停)：光标至多多走 0.15s 后停住，恢复后等声音，不倒退
+  const s: Step[] = steady(0, 2000);
+  for (let t = 2300; t < 3500; t += 60) { s.push({ at: t, ap: (t - 300) / 1000 }); s.push({ at: t + 0.1, pos: (t - 300) / 1000 + 0.04 }); }
+  const out = run(s, 3500);
+  const peak = Math.max(...out.filter(([t]) => t < 2300).map(([, d]) => d));
+  const tt = tickAt(out, 3300);
+  check("S2 播放中卡顿：不越过封顶、不倒退，恢复后与声音一致",
+    peak <= 1.98 + 0.15 + 1e-6 && !backMovesWhile(out, 0, 3500) && Math.abs(at(out, 3300) - (tt - 300) / 1000) < 0.002,
+    `卡顿中最远=${peak.toFixed(4)} err@3300=${((at(out, 3300) - (tt - 300) / 1000) * 1000).toFixed(1)}ms`);
+}
+{
+  // 音频先于视频结束：audio-pts 停更但 time-pos 照常 → 不是停滞，光标照常前进(不在 0.15s 处停住)
+  const s: Step[] = steady(0, 2000);
+  for (let t = 2000; t < 3000; t += 42) s.push({ at: t, pos: t / 1000 + 0.04 });
+  const out = run(s, 3000, { hasVideo: true });
+  check("S3 音频先结束、画面继续：不判为停滞", out.filter(([t]) => t > 2000 && t < 3000).every(([, , src]) => src !== "stall") && at(out, 2500) > 2.4,
+    `@2500=${at(out, 2500).toFixed(4)}`);
+}
+{
+  // 纯音频回报间隔 110ms(实测最大约 100ms)：不触发停滞
+  const s: Step[] = [];
+  for (let t = 0; t < 3000; t += 110) { s.push({ at: t, ap: t / 1000 }); s.push({ at: t + 0.1, pos: t / 1000 }); }
+  const out = run(s, 3000, { hasVideo: false });
+  check("S4 纯音频 110ms 间隔：不触发停滞", out.every(([, , src]) => src !== "stall"), "");
+}
+{
+  // 事件只是慢了(170ms 一条)而时钟在走：短暂封顶后新回报在前 → 向前跟上，不倒退
+  const s: Step[] = steady(0, 1000);
+  s.push({ at: 1150, ap: 1.15 }, { at: 1150.1, pos: 1.19 });
+  for (let t = 1320; t < 2000; t += 60) { s.push({ at: t, ap: t / 1000 }); s.push({ at: t + 0.1, pos: t / 1000 + 0.04 }); }
+  const out = run(s, 2000);
+  const tt = tickAt(out, 1800);
+  check("S5 回报变慢但时钟在走：不倒退，随后与声音一致", !backMovesWhile(out, 0, 2000) && Math.abs(at(out, 1800) - tt / 1000) < 0.003,
+    `err@1800=${((at(out, 1800) - tt / 1000) * 1000).toFixed(1)}ms`);
+}
+{
+  // codex 反例(§6.33 原列为限制)：暂停帧 2.04；暂停中 store 收到远落后的旧 audio-pts 1.3；恢复后迟迟没有新回报。
+  // 等声超时后两路都停更 → 按停滞处理，光标停在暂停帧，不被旧值拉回
+  const out = run([{ at: 1000, pos: 2.04, ap: 2.0 }, { at: 1010, playing: false }, { at: 1100, ap: 1.3 }, { at: 2000, playing: true }], 2500, V);
+  check("S6 恢复后无新回报、store 里是远落后的旧 audio-pts：不倒退", !backMovesWhile(out, 0, 2500) && at(out, 2400) >= 2.04 - 1e-9,
+    `@2400=${at(out, 2400).toFixed(4)}`);
+}
+{
+  // codex 反例(§6.33 原列为限制)：暂停中改 2 倍速，恢复后 210ms 才有新音频 2.00 → 原地等它追上，不回退
+  const out = run([{ at: 1000, pos: 2.04, ap: 2.0 }, { at: 1010, playing: false }, { at: 1500, speed: 2 }, { at: 2000, playing: true },
+    { at: 2210, ap: 2.0 }, { at: 2400, ap: 2.38 }, { at: 2600, ap: 2.78 }], 2800, V);
+  check("S7 暂停中变速 + 恢复后音频迟到：不回退，随后与声音一致", !backMovesWhile(out, 0, 2800) && Math.abs(at(out, 2700) - (2.78 + (tickAt(out, 2700) - 2600) / 500)) < 0.01,
+    `@2210=${at(out, 2210).toFixed(3)} @2700=${at(out, 2700).toFixed(3)}`);
+}
+{
+  // codex 反例：起播停顿期间暂停 / 恢复两次(两路一直没有新回报)，950ms 声音才开始。
+  // 暂停时对齐屏幕帧(停滞中的最后一条 time-pos 0.0417，按设计回退)；播放期间不重新外推过头、不倒退；声音开始后跟上
+  const s: Step[] = [{ at: 0, force: { t: 0 } }, { at: 4, restart: true }, { at: 5, pos: 0.0417, ap: 0.0004 },
+    { at: 300, playing: false }, { at: 400, playing: true }, { at: 650, playing: false }, { at: 750, playing: true }];
+  for (let t = 950; t < 1800; t += 42) s.push({ at: t, ap: 0.01 + (t - 950) / 1000, pos: 0.05 + (t - 950) / 1000 });
+  const out = run(s, 1800, { hasVideo: true });
+  const peak = Math.max(...out.filter(([t]) => t < 950).map(([, d]) => d));
+  const tt = tickAt(out, 1700);
+  const playBack = backMovesWhile(out, 0, 299) || backMovesWhile(out, 401, 649) || backMovesWhile(out, 751, 1800);
+  check("S8 停顿中暂停 / 恢复：暂停对齐屏幕帧，播放中不倒退、不外推过头，声音开始后跟上",
+    Math.abs(at(out, 390) - 0.0417) < 1e-9 && Math.abs(at(out, 740) - 0.0417) < 1e-9 && peak <= 0.0417 + 0.15 + 1e-6 && !playBack &&
+      Math.abs(at(out, 1700) - (0.01 + (tt - 950) / 1000)) < 0.003,
+    `暂停时=${at(out, 390).toFixed(4)}/${at(out, 740).toFixed(4)} 停顿中最远=${peak.toFixed(4)} err@1700=${((at(out, 1700) - (0.01 + (tt - 950) / 1000)) * 1000).toFixed(1)}ms`);
+}
+{
+  // 真卡住 1.2s(>600ms)，期间 1Hz poll 拿回同一个 time-pos：一直停住(600ms 处不跳去 time-pos 外推)，恢复后不倒退
+  // (App 的 1Hz poll 只在与当前值相差 >0.1s 时写入 store，卡住时不会写；这里没有 poll 回报)
+  const s: Step[] = steady(0, 2000);
+  for (let t = 3200; t < 4200; t += 60) { s.push({ at: t, ap: (t - 1200) / 1000 }); s.push({ at: t + 0.1, pos: (t - 1200) / 1000 + 0.04 }); }
+  const out = run(s, 4200);
+  const during = out.filter(([t]) => t > 2200 && t < 3200).map(([, d]) => d);
+  const tt = tickAt(out, 4100);
+  check("S9 卡住 1.2s(>600ms)：一直停住、600ms 处不跳、不倒退，恢复后跟上",
+    Math.max(...during) - Math.min(...during) < 1e-9 && !backMovesWhile(out, 0, 4200) && Math.abs(at(out, 4100) - (tt - 1200) / 1000) < 0.003,
+    `停住于 ${during[0].toFixed(4)} err@4100=${((at(out, 4100) - (tt - 1200) / 1000) * 1000).toFixed(1)}ms`);
+}
+{
+  // E5 补充：事件断了但时钟在走(poll 值在前进) → 第一次 poll 之后不再判停滞，按 time-pos 平滑外推
+  const steps: Step[] = [...steady(0, 2000, true, 0)];
+  for (let t = 3000; t <= 5000; t += 1000) steps.push({ at: t, pos: t / 1000 });
+  const out = run(steps, 5000);
+  check("S10 事件断了、poll 值在前进：首次 poll 后不再停滞", out.filter(([t]) => t > 3010).every(([, , src]) => src !== "stall"), "");
+}
+{
+  // codex 反例：事件断了、3s 的 poll 证明时钟在走(豁免)，之后视频也卡住(再无前进)：豁免 1.5s 后失效，重新判停滞
+  const steps: Step[] = [...steady(0, 2000, true, 0), { at: 3000, pos: 3.0 }];
+  const out = run(steps, 5000);
+  check("S11 豁免有时限：poll 前进后又卡住，1.5s 后重新判停滞", out.filter(([t]) => t > 4600).every(([, , src]) => src === "stall"),
+    `@4700 src=${out.filter(([t]) => t <= 4700).at(-1)![2]}`);
+}
+{
+  // codex 反例：单曲循环 6s，从 5.75 seek 到 5.90；解除钉住后一条 seek 前的旧帧 5.75 迟到，紧接着暂停。
+  // op 结束后的静默期内不放宽循环末尾的落后界 → 不采用 5.75
+  const s: Step[] = [];
+  for (let t = 1000; t < 1750; t += 42) { s.push({ at: t, ap: 5.0 + (t - 1000) / 1000 }); s.push({ at: t + 0.1, pos: 5.04 + (t - 1000) / 1000 }); }
+  s.push({ at: 1750, force: { t: 5.9 } }, { at: 1755, pos: 5.9 }, { at: 1756, restart: true }, { at: 1790, ap: 5.88 }, { at: 1800, pos: 5.75 }, { at: 1805, playing: false });
+  const out = run(s, 2100, { hasVideo: true, loopFile: true, duration: 6 });
+  check("S12 循环末尾 seek 后迟到的旧帧不被采用", at(out, 2100) >= 5.88 - 1e-9, `final=${at(out, 2100).toFixed(4)}`);
+}
+{
+  // codex 反例：刚回绕到开头(光标已取模，audio-pts 还是上一圈的负值尾巴 −0.0083)，屏幕帧 time-pos 0.0417；
+  // 148ms 无回报后暂停(光标已超出屏幕帧 >50ms、尚未判停滞) → 仍对齐到 0.0417(循环边界放宽落后界)
+  const s: Step[] = [];
+  for (let t = 1000; t < 1900; t += 42) { s.push({ at: t, ap: 5.0 + (t - 1000) / 1000 }); s.push({ at: t + 0.1, pos: 5.04 + (t - 1000) / 1000 }); }
+  s.push({ at: 1950, pos: 0.0417, ap: -0.0083 }, { at: 2098, playing: false });
+  const out = run(s, 2300, { hasVideo: true, loopFile: true, duration: 6 });
+  check("S13 刚回绕到开头时暂停：对齐屏幕帧", Math.abs(at(out, 2300) - 0.0417) < 1e-9, `暂停前=${at(out, 2095).toFixed(4)} final=${at(out, 2300).toFixed(4)}`);
+}
+{
+  // codex 反例：停滞中 seek 回同一位置，restart 后回报的数值与之前完全相同 → op 后首条回报算"前进"，不误判停滞
+  const s: Step[] = [...steady(0, 2000), { at: 3000, force: { t: 2.02 } }, { at: 3005, pos: 2.02 }, { at: 3006, restart: true }, { at: 3010, ap: 1.98 }];
+  for (let t = 3060; t < 4300; t += 50) { s.push({ at: t, ap: 1.98 + (t - 3010) / 1000 }); s.push({ at: t + 0.1, pos: 2.02 + (t - 3010) / 1000 }); }
+  const out = run(s, 4300);
+  const tt = tickAt(out, 4200);
+  // 落点 2.02 比音频超前 40ms：解除时"不后退"保护按 −10% 慢追(原有 seek 行为)，所以在 1.2s 后检查
+  check("S14 seek 回同一位置、数值相同：不误判停滞，随后跟上", out.filter(([t]) => t > 3006 && t < 3150).every(([, , src]) => src !== "stall") &&
+    Math.abs(at(out, 3020) - 2.02) < 0.01 && Math.abs(at(out, 4200) - (1.98 + (tt - 3010) / 1000)) < 0.003,
+    `@3020=${at(out, 3020).toFixed(4)} err@4200=${((at(out, 4200) - (1.98 + (tt - 3010) / 1000)) * 1000).toFixed(1)}ms`);
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exitCode = failures ? 1 : 0;

@@ -5,8 +5,11 @@
 osd-dimensions 的边距裁出视频区解码帧号。锁屏 / 窗口被遮挡时也能测。
 会修改 App 的设置(OSD 开关、播放位置记录)，测试前备份、结束后原样还原 %APPDATA%/dev.mark.mplayer/store.json。
 
+--tail：改用 6s 视频，在每圈最后 0.02–0.30s 暂停(单曲循环回绕处，mpv 处理暂停要 94–164ms)；
+要求 App 的播放模式是单曲循环。
+
 用法(需先 pnpm tauri build --debug --no-bundle；App 不能已在运行，否则单实例会把文件转给旧实例)：
-  uv run --with websocket-client --with numpy python dev-tools/sync/probes/app_pause_e2e.py [--exe <mplayer.exe>] [--trials 16] [--work <目录>]
+  uv run --with websocket-client --with numpy python dev-tools/sync/probes/app_pause_e2e.py [--exe <mplayer.exe>] [--trials 16] [--tail] [--work <目录>]
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -175,6 +178,16 @@ class Cdp:
         self.call("Input.dispatchKeyEvent", type="keyUp", key=key, code=code, windowsVirtualKeyCode=vk)
 
 
+# --tail：页面内逐帧盯 OSD，到达目标时刻(秒)就派发空格(比 CDP 往返准)
+TAIL_TRIGGER = """(() => { window.__goal = null; window.__fired = null; const f = () => {
+  const d = document.querySelector('div.fixed.top-12.left-3'); const s = d && d.querySelector('span');
+  if (window.__goal !== null && s) { const p = s.textContent.split(':');
+    const sec = parseFloat(p[p.length - 1]) + (p.length > 1 ? parseInt(p[p.length - 2]) * 60 : 0);
+    if (sec >= window.__goal) { window.__goal = null; window.__fired = s.textContent;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true })); } }
+  requestAnimationFrame(f); }; requestAnimationFrame(f); return 'ok'; })()"""
+
 OSD_JS = """(() => { const d = document.querySelector('div.fixed.top-12.left-3'); if (!d) return null;
   const s = d.querySelectorAll('span'); return { time: s[0]?.textContent, frame: s[2]?.textContent ?? null }; })()"""
 
@@ -195,14 +208,19 @@ def main():
     ap.add_argument("--exe", default=os.path.join(repo, "src-tauri", "target", "debug", "mplayer.exe"))
     ap.add_argument("--trials", type=int, default=16)
     ap.add_argument("--work", default=os.path.join(tempfile.gettempdir(), "mplayer-pause-e2e"))
-    a = ap.parse_args()
-    exe, work, trials = a.exe, a.work, a.trials
+    ap.add_argument("--tail", action="store_true")
+    args = ap.parse_args()
+    exe, work, trials = args.exe, args.work, args.trials
     os.makedirs(work, exist_ok=True)
     random.seed(11)
-    video = os.path.join(work, "app_frames24.mp4")
+    dur = 6 if args.tail else 20
+    video = os.path.join(work, "app_frames24_6s.mp4" if args.tail else "app_frames24.mp4")
     if not os.path.exists(video):
-        gen_video(video)
+        gen_video(video, secs=dur)
     store = os.path.expandvars(r"%APPDATA%\dev.mark.mplayer\store.json")
+    if args.tail and json.load(open(store, encoding="utf-8")).get("ui", {}).get("playbackMode") != "loop-single":
+        print("--tail 需要 App 播放模式为单曲循环")
+        return 2
     backup = os.path.join(work, "store.json.bak")
     shutil.copy2(store, backup)
     env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9333")
@@ -228,9 +246,21 @@ def main():
         if a and b and a["time"] == b["time"]:
             cdp.key(" ", "Space", 32)  # 没在播就先开播
             time.sleep(1.0)
+        if args.tail:
+            cdp.js(TAIL_TRIGGER)
         for k in range(trials):
-            time.sleep(random.uniform(0.8, 1.6))
-            cdp.key(" ", "Space", 32)
+            if args.tail:
+                while True:  # 本圈过半后再布置目标，避免刚回绕时误触发
+                    o = cdp.js(OSD_JS)
+                    if o and 2.5 < osd_seconds(o["time"]) < dur - 0.8:
+                        break
+                    time.sleep(0.05)
+                cdp.js(f"window.__fired = null; window.__goal = {dur - random.uniform(0.02, 0.30)}")
+                while cdp.js("window.__fired") is None:
+                    time.sleep(0.02)
+            else:
+                time.sleep(random.uniform(0.8, 1.6))
+                cdp.key(" ", "Space", 32)
             time.sleep(0.8)
             o = cdp.js(OSD_JS)
             dims = json.loads(cdp.js("window.__TAURI_INTERNALS__.invoke('plugin:libmpv|get_property', { name: 'osd-dimensions', format: 'string', windowLabel: 'main' })"))
